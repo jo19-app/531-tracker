@@ -205,6 +205,10 @@ export default function App() {
   const [newLiftTM, setNewLiftTM] = useState("");
   const [exportMsg, setExportMsg] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importSelected, setImportSelected] = useState(new Set());
+  const [importMsg, setImportMsg] = useState("");
+  const importFileRef = useRef(null);
 
   // ── Timer ─────────────────────────────────────────────────────────────────
 
@@ -311,51 +315,166 @@ export default function App() {
 
   // ── Export ────────────────────────────────────────────────────────────────
 
-  function buildExportData() {
-    const sessions = [...history].sort((a, b) => a.date.localeCompare(b.date)).map(h => {
-      const amrap = h.sets.find(s => s.isAmrap);
-      return {
-        Date: fmtDate(h.date), Lift: h.lift, Week: weekLabel(h.weekIdx), Cycle: h.cycle,
-        "Set 1 (kg)": h.sets[0]?.weight ?? "", "Set 1 Reps": h.sets[0]?.reps ?? "",
-        "Set 2 (kg)": h.sets[1]?.weight ?? "", "Set 2 Reps": h.sets[1]?.reps ?? "",
-        "AMRAP (kg)": amrap?.weight ?? "", "AMRAP Reps": amrap?.reps ?? "",
-        "Accessories": h.accessories.map(a => `${a.name}: ${a.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}`).join(" | "),
-        "Duration": h.duration ? fmt(h.duration) : "",
-      };
-    });
-    const tms = liftNames.map(l => ({
-      Lift: l, "Training Max (kg)": lifts[l]?.trainingMax ?? "",
-      "PR — Best AMRAP Weight (kg)": getPR(l) ?? "No data",
-    }));
-    const progressSheets = {};
-    liftNames.forEach(lift => {
-      progressSheets[lift.slice(0, 28)] = [...history]
-        .filter(h => h.lift === lift).sort((a, b) => a.date.localeCompare(b.date))
-        .map(h => { const amrap = h.sets.find(s => s.isAmrap); return { Date: fmtDate(h.date), Week: weekLabel(h.weekIdx), Cycle: h.cycle, "AMRAP Weight (kg)": amrap?.weight ?? "", "AMRAP Reps": amrap?.reps ?? "" }; });
-    });
-    return { sessions, tms, progressSheets };
+  // Converts internal date "1 May 2026" back to "YYYY-MM-DD" for import round-trip
+  function parseImportDate(str) {
+    if (!str) return null;
+    // Try ISO first
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    // Try "1 May 2026" or "01 May 2026"
+    const months = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+    const m = str.toLowerCase().match(/(\d{1,2})\s+([a-z]+)\s+(\d{4})/);
+    if (m) {
+      const mo = months[m[2].slice(0,3)];
+      if (mo) return `${m[3]}-${String(mo).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    }
+    return null;
   }
 
   function exportExcel() {
     try {
-      const { sessions, tms, progressSheets } = buildExportData();
       const wb = XLSX.utils.book_new();
-      const ws1 = XLSX.utils.json_to_sheet(sessions);
-      ws1["!cols"] = [{ wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 7 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 40 }, { wch: 10 }];
-      XLSX.utils.book_append_sheet(wb, ws1, "Sessions");
-      const ws2 = XLSX.utils.json_to_sheet(tms);
-      ws2["!cols"] = [{ wch: 20 }, { wch: 20 }, { wch: 28 }];
-      XLSX.utils.book_append_sheet(wb, ws2, "Training Maxes & PRs");
-      Object.entries(progressSheets).forEach(([name, rows]) => {
-        if (!rows.length) return;
-        const ws = XLSX.utils.json_to_sheet(rows);
-        ws["!cols"] = [{ wch: 14 }, { wch: 10 }, { wch: 7 }, { wch: 18 }, { wch: 14 }];
-        XLSX.utils.book_append_sheet(wb, ws, name);
+
+      // ── Sessions sheet (importable format) ──
+      const sessionRows = [...history].sort((a, b) => a.date.localeCompare(b.date)).map(h => {
+        const amrap = h.sets.find(s => s.isAmrap);
+        return {
+          "Date (DD Mon YYYY)": fmtDate(h.date),
+          "Lift": h.lift,
+          "Week (1-4)": h.weekIdx + 1,
+          "Cycle": h.cycle,
+          "Set1_Weight_kg": h.sets[0]?.weight ?? "",
+          "Set1_Reps": h.sets[0]?.reps ?? "",
+          "Set2_Weight_kg": h.sets[1]?.weight ?? "",
+          "Set2_Reps": h.sets[1]?.reps ?? "",
+          "AMRAP_Weight_kg": amrap?.weight ?? "",
+          "AMRAP_Reps": amrap?.reps ?? "",
+          "Accessories": h.accessories.map(a => `${a.name}: ${a.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}`).join(" | "),
+          "Duration_seconds": h.duration ?? "",
+        };
       });
+      const ws1 = XLSX.utils.json_to_sheet(sessionRows);
+      ws1["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 7 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 12 }, { wch: 40 }, { wch: 16 }];
+      XLSX.utils.book_append_sheet(wb, ws1, "Sessions");
+
+      // ── Custom Exercises sheet ──
+      const exRows = customExercises.map(e => ({ "Custom Exercise Name": e }));
+      const ws2 = XLSX.utils.json_to_sheet(exRows.length ? exRows : [{ "Custom Exercise Name": "" }]);
+      ws2["!cols"] = [{ wch: 28 }];
+      XLSX.utils.book_append_sheet(wb, ws2, "Custom Exercises");
+
+      // ── Instructions sheet ──
+      const instructions = [
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "SESSIONS sheet:" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Date: use format '1 May 2026' or 'YYYY-MM-DD'" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Lift: must match a lift name in the app" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Week: 1, 2, 3, or 4 (4 = Deload)" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Cycle: any number" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - AMRAP_Reps: reps actually completed on the last set" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Accessories: format 'Exercise: RepsxWeightkg' (optional)" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "CUSTOM EXERCISES sheet:" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Add one exercise name per row" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - These will be added to your accessory dropdown" },
+      ];
+      const ws3 = XLSX.utils.json_to_sheet(instructions);
+      ws3["!cols"] = [{ wch: 60 }];
+      XLSX.utils.book_append_sheet(wb, ws3, "Instructions");
+
       XLSX.writeFile(wb, "531-tracker-export.xlsx");
-      setExportMsg("Excel file downloaded!");
-      setTimeout(() => setExportMsg(""), 3000);
+      setExportMsg("Excel downloaded — use same file to import!");
+      setTimeout(() => setExportMsg(""), 4000);
     } catch (e) { setExportMsg("Export failed: " + e.message); }
+  }
+
+  // ── Import ────────────────────────────────────────────────────────────────
+
+  function handleImportFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "array" });
+
+        // Parse Sessions sheet
+        const ws = wb.Sheets["Sessions"];
+        if (!ws) { setImportMsg("No 'Sessions' sheet found."); return; }
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+        const parsed = rows.map((r, i) => {
+          const date = parseImportDate(String(r["Date (DD Mon YYYY)"] || r["Date"] || ""));
+          const lift = String(r["Lift"] || "").trim();
+          const weekNum = parseInt(r["Week (1-4)"] || r["Week"] || 1);
+          const weekIdx = Math.min(Math.max((weekNum || 1) - 1, 0), 3);
+          const cycle = parseInt(r["Cycle"] || 1) || 1;
+          const s1w = parseFloat(r["Set1_Weight_kg"]) || 0;
+          const s1r = parseInt(r["Set1_Reps"]) || 0;
+          const s2w = parseFloat(r["Set2_Weight_kg"]) || 0;
+          const s2r = parseInt(r["Set2_Reps"]) || 0;
+          const aw  = parseFloat(r["AMRAP_Weight_kg"]) || 0;
+          const ar  = parseInt(r["AMRAP_Reps"]) || 0;
+          const dur = parseInt(r["Duration_seconds"]) || 0;
+          if (!date || !lift) return null;
+          return {
+            id: "imp_" + Date.now() + "_" + i,
+            date, lift, weekIdx, cycle, duration: dur,
+            sets: [
+              { weight: s1w, reps: s1r, isAmrap: false },
+              { weight: s2w, reps: s2r, isAmrap: false },
+              { weight: aw,  reps: ar,  isAmrap: true  },
+            ].filter(s => s.weight > 0 || s.reps > 0),
+            accessories: [],
+          };
+        }).filter(Boolean);
+
+        // Parse Custom Exercises sheet
+        const wsEx = wb.Sheets["Custom Exercises"];
+        const importedExercises = wsEx
+          ? XLSX.utils.sheet_to_json(wsEx, { defval: "" })
+              .map(r => String(r["Custom Exercise Name"] || "").trim())
+              .filter(Boolean)
+          : [];
+
+        // Classify: new vs duplicate
+        const existingKeys = new Set(history.map(h => `${h.date}__${h.lift}`));
+        const newSessions = parsed.filter(s => !existingKeys.has(`${s.date}__${s.lift}`));
+        const dupSessions = parsed.filter(s => existingKeys.has(`${s.date}__${s.lift}`));
+
+        setImportPreview({ newSessions, dupSessions, importedExercises });
+        setImportSelected(new Set(newSessions.map(s => s.id)));
+      } catch (err) {
+        setImportMsg("Could not read file: " + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    // Reset input so same file can be re-selected
+    e.target.value = "";
+  }
+
+  function confirmImport() {
+    const toAdd = importPreview.newSessions.filter(s => importSelected.has(s.id));
+    const toOverwrite = importPreview.dupSessions.filter(s => importSelected.has(s.id));
+    setHistory(prev => {
+      let updated = [...prev];
+      // Remove overwritten duplicates
+      const overwriteKeys = new Set(toOverwrite.map(s => `${s.date}__${s.lift}`));
+      updated = updated.filter(h => !overwriteKeys.has(`${h.date}__${h.lift}`));
+      return [...updated, ...toAdd, ...toOverwrite];
+    });
+    // Merge custom exercises
+    if (importPreview.importedExercises.length > 0) {
+      setCustomExercises(prev => {
+        const existing = new Set(prev);
+        const toAddEx = importPreview.importedExercises.filter(e => !existing.has(e));
+        return [...prev, ...toAddEx];
+      });
+    }
+    const total = toAdd.length + toOverwrite.length;
+    setImportMsg(`✓ Imported ${total} session${total !== 1 ? "s" : ""}${importPreview.importedExercises.length ? ` + ${importPreview.importedExercises.length} exercises` : ""}`);
+    setImportPreview(null);
+    setImportSelected(new Set());
+    setTimeout(() => setImportMsg(""), 4000);
   }
 
   function exportPDF() {
@@ -780,15 +899,113 @@ export default function App() {
 
           <div style={s.divider} />
           <div style={s.sectionTitle}>Export Data</div>
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 24 }}>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
             <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
-              Includes all sessions, training maxes, PRs, and per-lift progress.
+              Excel export doubles as an import template — add rows and import them back.
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button style={{ ...s.btn, flex: 1, background: "#162516", color: "#4caf7a", border: "1px solid #2a4a2a" }} onClick={exportExcel}>📊 Excel</button>
               <button style={{ ...s.btn, flex: 1, background: "#251616", color: "#e07070", border: "1px solid #4a2a2a" }} onClick={exportPDF}>📄 PDF</button>
             </div>
-            {exportMsg && <div style={{ marginTop: 12, fontSize: 13, color: C.accent, textAlign: "center", lineHeight: 1.5 }}>✓ {exportMsg}</div>}
+            {exportMsg && <div style={{ marginTop: 12, fontSize: 13, color: C.accent, textAlign: "center" }}>✓ {exportMsg}</div>}
+          </div>
+
+          <div style={s.sectionTitle}>Import from Excel</div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 24 }}>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
+              Import sessions and custom exercises from a previously exported Excel file.
+            </div>
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".xlsx,.xls"
+              style={{ display: "none" }}
+              onChange={handleImportFile}
+            />
+            <button style={{ ...s.btn, background: "#161825", color: "#7090e0", border: "1px solid #2a3060" }}
+              onClick={() => importFileRef.current?.click()}>
+              📂 Choose Excel File
+            </button>
+            {importMsg && <div style={{ marginTop: 12, fontSize: 13, color: C.accent, textAlign: "center" }}>{importMsg}</div>}
+          </div>
+        </div>
+      )}
+
+      {/* ── Import Preview Modal ── */}
+      {importPreview && (
+        <div style={s.modal}>
+          <div style={{ ...s.modalBox, maxHeight: "85vh", overflowY: "auto" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Import Preview</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
+              Select which sessions to import. Tap to toggle.
+            </div>
+
+            {importPreview.newSessions.length > 0 && (
+              <>
+                <div style={{ fontSize: 10, color: C.green, letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 8 }}>
+                  New Sessions ({importPreview.newSessions.length})
+                </div>
+                {importPreview.newSessions.map(s => {
+                  const selected = importSelected.has(s.id);
+                  return (
+                    <div key={s.id} style={{ background: selected ? "#162516" : C.surface, border: `1px solid ${selected ? "#2a4a2a" : C.border}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8, cursor: "pointer" }}
+                      onClick={() => setImportSelected(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; })}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div>
+                          <div style={{ fontSize: 16, fontWeight: 700 }}>{s.lift}</div>
+                          <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(s.date)} · {weekLabel(s.weekIdx)} · C{s.cycle}</div>
+                        </div>
+                        <div style={{ fontSize: 18, color: selected ? C.green : C.border }}>{selected ? "✓" : "○"}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {importPreview.dupSessions.length > 0 && (
+              <>
+                <div style={{ fontSize: 10, color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "14px 0 8px" }}>
+                  Already Exists — Overwrite? ({importPreview.dupSessions.length})
+                </div>
+                {importPreview.dupSessions.map(s => {
+                  const selected = importSelected.has(s.id);
+                  return (
+                    <div key={s.id} style={{ background: selected ? "#2a2210" : C.surface, border: `1px solid ${selected ? C.accentDim : C.border}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8, cursor: "pointer" }}
+                      onClick={() => setImportSelected(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; })}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div>
+                          <div style={{ fontSize: 16, fontWeight: 700 }}>{s.lift}</div>
+                          <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(s.date)} · {weekLabel(s.weekIdx)} · C{s.cycle}</div>
+                        </div>
+                        <div style={{ fontSize: 18, color: selected ? C.accent : C.border }}>{selected ? "✓" : "○"}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {importPreview.importedExercises.length > 0 && (
+              <div style={{ background: "#161825", border: `1px solid #2a3060`, borderRadius: 10, padding: "10px 14px", marginTop: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: "#7090e0", letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 6 }}>Custom Exercises to Add</div>
+                {importPreview.importedExercises.map((ex, i) => (
+                  <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>+ {ex}</div>
+                ))}
+              </div>
+            )}
+
+            {importPreview.newSessions.length === 0 && importPreview.dupSessions.length === 0 && (
+              <div style={{ color: C.muted, fontSize: 14, marginBottom: 16 }}>No valid sessions found in the file.</div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+              <button style={{ ...s.btnOutline, flex: 1 }} onClick={() => { setImportPreview(null); setImportSelected(new Set()); }}>Cancel</button>
+              <button style={{ ...s.btn, flex: 1, opacity: importSelected.size === 0 ? 0.4 : 1 }}
+                disabled={importSelected.size === 0} onClick={confirmImport}>
+                Import {importSelected.size} Session{importSelected.size !== 1 ? "s" : ""}
+              </button>
+            </div>
           </div>
         </div>
       )}
