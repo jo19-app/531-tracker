@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 
-// ── 5/3/1 Program Logic ──────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const DEFAULT_LIFTS = ["Squat", "Bench Press", "Deadlift", "Overhead Press"];
 
@@ -19,15 +19,12 @@ const WEEKS = [
   { label: "Deload", sets: [{ pct: 0.40, reps: 5 }, { pct: 0.50, reps: 5 }, { pct: 0.60, reps: 5 }] },
 ];
 
-function round5(n) { return Math.round(n / 2.5) * 2.5; }
-function calcSets(trainingMax, weekIdx) {
-  return WEEKS[weekIdx].sets.map(s => ({
-    pct: s.pct, weight: round5(trainingMax * s.pct),
-    reps: s.reps, isAmrap: typeof s.reps === "string",
-  }));
-}
+const DEFAULT_LIFTS_DATA = {
+  "Squat": { trainingMax: 140 }, "Bench Press": { trainingMax: 105 },
+  "Deadlift": { trainingMax: 170 }, "Overhead Press": { trainingMax: 72.5 },
+};
 
-const seedHistory = [
+const SEED_HISTORY = [
   { id: "h1", date: "2026-04-14", lift: "Squat", weekIdx: 0, cycle: 1, sets: [{ weight: 90, reps: 5, isAmrap: false }, { weight: 105, reps: 5, isAmrap: false }, { weight: 117.5, reps: 8, isAmrap: true }], accessories: [], duration: 2820 },
   { id: "h2", date: "2026-04-17", lift: "Bench Press", weekIdx: 0, cycle: 1, sets: [{ weight: 67.5, reps: 5, isAmrap: false }, { weight: 77.5, reps: 5, isAmrap: false }, { weight: 87.5, reps: 7, isAmrap: true }], accessories: [], duration: 2400 },
   { id: "h3", date: "2026-04-21", lift: "Squat", weekIdx: 1, cycle: 1, sets: [{ weight: 95, reps: 3, isAmrap: false }, { weight: 110, reps: 3, isAmrap: false }, { weight: 122.5, reps: 5, isAmrap: true }], accessories: [], duration: 3000 },
@@ -36,14 +33,89 @@ const seedHistory = [
   { id: "h6", date: "2026-05-08", lift: "Bench Press", weekIdx: 1, cycle: 2, sets: [{ weight: 73.5, reps: 3, isAmrap: false }, { weight: 84, reps: 3, isAmrap: false }, { weight: 94.5, reps: 6, isAmrap: true }], accessories: [{ name: "Dips", sets: [{ reps: 10, weight: 0 }, { reps: 10, weight: 0 }] }], duration: 2640 },
 ];
 
-const defaultLiftsData = {
-  "Squat": { trainingMax: 140 }, "Bench Press": { trainingMax: 105 },
-  "Deadlift": { trainingMax: 170 }, "Overhead Press": { trainingMax: 72.5 },
-};
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
+function round5(n) { return Math.round(n / 2.5) * 2.5; }
+function calcSets(trainingMax, weekIdx) {
+  return WEEKS[weekIdx].sets.map(s => ({
+    pct: s.pct, weight: round5(trainingMax * s.pct),
+    reps: s.reps, isAmrap: typeof s.reps === "string",
+  }));
+}
 function fmt(sec) { const m = Math.floor(sec / 60), s = sec % 60; return `${m}:${String(s).padStart(2, "0")}`; }
 function fmtDate(d) { return new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }); }
 function weekLabel(idx) { return WEEKS[idx]?.label ?? ""; }
+
+// ── localStorage helpers ──────────────────────────────────────────────────────
+
+function load(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v !== null ? JSON.parse(v) : fallback;
+  } catch { return fallback; }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+// ── usePersist hook — state that auto-saves to localStorage ───────────────────
+
+function usePersist(key, fallback) {
+  const [val, setVal] = useState(() => load(key, fallback));
+  const set = useCallback((updater) => {
+    setVal(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      save(key, next);
+      return next;
+    });
+  }, [key]);
+  return [val, set];
+}
+
+// ── Standalone input components (prevent keyboard dismissal) ──────────────────
+
+// A stable number input that doesn't re-mount when parent re-renders
+const StableNumberInput = ({ value, onChange, style, placeholder, min, step }) => {
+  const ref = useRef(null);
+  // Use uncontrolled approach with ref to prevent re-mount focus loss
+  useEffect(() => {
+    if (ref.current && ref.current !== document.activeElement) {
+      ref.current.value = value ?? "";
+    }
+  }, [value]);
+  return (
+    <input
+      ref={ref}
+      type="number"
+      defaultValue={value}
+      onChange={e => onChange(e.target.value)}
+      style={style}
+      placeholder={placeholder}
+      min={min}
+      step={step}
+    />
+  );
+};
+
+const StableTextInput = ({ value, onChange, style, placeholder, onKeyDown }) => {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current && ref.current !== document.activeElement) {
+      ref.current.value = value ?? "";
+    }
+  }, [value]);
+  return (
+    <input
+      ref={ref}
+      type="text"
+      defaultValue={value}
+      onChange={e => onChange(e.target.value)}
+      onKeyDown={onKeyDown}
+      style={style}
+      placeholder={placeholder}
+    />
+  );
+};
 
 // ── Line Chart ────────────────────────────────────────────────────────────────
 
@@ -77,18 +149,37 @@ function LineChart({ points, color = "#f0c040", height = 90 }) {
   );
 }
 
+// ── Confirm Delete Modal ───────────────────────────────────────────────────────
+
+function ConfirmModal({ message, onConfirm, onCancel, C, s }) {
+  return (
+    <div style={s.modal} onClick={e => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div style={s.modalBox}>
+        <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>Delete Entry?</div>
+        <div style={{ fontSize: 14, color: C.muted, marginBottom: 24, lineHeight: 1.6 }}>{message}</div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button style={{ ...s.btnOutline, flex: 1 }} onClick={onCancel}>Cancel</button>
+          <button style={{ ...s.btn, flex: 1, background: C.danger, color: "#fff" }} onClick={onConfirm}>Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [screen, setScreen] = useState("home");
-  const [liftNames, setLiftNames] = useState([...DEFAULT_LIFTS]);
-  const [lifts, setLifts] = useState(defaultLiftsData);
-  const [currentWeek, setCurrentWeek] = useState(0);
-  const [currentCycle, setCurrentCycle] = useState(2);
-  const [history, setHistory] = useState(seedHistory);
-  const [customExercises, setCustomExercises] = useState([]);
 
-  // Session
+  // ── Persisted state (survives reload) ─────────────────────────────────────
+  const [liftNames, setLiftNames] = usePersist("531_liftNames", [...DEFAULT_LIFTS]);
+  const [lifts, setLifts] = usePersist("531_lifts", DEFAULT_LIFTS_DATA);
+  const [currentWeek, setCurrentWeek] = usePersist("531_currentWeek", 0);
+  const [currentCycle, setCurrentCycle] = usePersist("531_currentCycle", 1);
+  const [history, setHistory] = usePersist("531_history", SEED_HISTORY);
+  const [customExercises, setCustomExercises] = usePersist("531_customEx", []);
+
+  // ── Session state ─────────────────────────────────────────────────────────
   const [sessionLift, setSessionLift] = useState(null);
   const [sessionSets, setSessionSets] = useState([]);
   const [accessories, setAccessories] = useState([]);
@@ -96,18 +187,25 @@ export default function App() {
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef(null);
 
-  // UI state
-  const [progressLift, setProgressLift] = useState("Squat");
-  const [editingLift, setEditingLift] = useState(null);
-  const [tmInput, setTmInput] = useState("");
-  const [newExInput, setNewExInput] = useState("");
-  const [showAddLift, setShowAddLift] = useState(false);
-  const [newLiftName, setNewLiftName] = useState("");
-  const [newLiftTM, setNewLiftTM] = useState("");
+  // Accessory form
   const [addingAccessory, setAddingAccessory] = useState(false);
   const [accName, setAccName] = useState("");
   const [accSets, setAccSets] = useState([{ reps: 10, weight: 40 }]);
+
+  // UI state
+  const [progressLift, setProgressLift] = useState(liftNames[0] ?? "Squat");
+  const [editingLift, setEditingLift] = useState(null);
+  const [tmInput, setTmInput] = useState("");
+  const [newExInput, setNewExInput] = useState("");
+  const [editingExIdx, setEditingExIdx] = useState(null);
+  const [editingExValue, setEditingExValue] = useState("");
+  const [showAddLift, setShowAddLift] = useState(false);
+  const [newLiftName, setNewLiftName] = useState("");
+  const [newLiftTM, setNewLiftTM] = useState("");
   const [exportMsg, setExportMsg] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  // ── Timer ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (sessionStart) {
@@ -121,11 +219,17 @@ export default function App() {
   function startSession(lift) {
     const sets = calcSets(lifts[lift].trainingMax, currentWeek).map(s => ({ ...s, actualReps: "", done: false }));
     setSessionLift(lift); setSessionSets(sets); setAccessories([]);
+    setAddingAccessory(false); setAccName(""); setAccSets([{ reps: 10, weight: 40 }]);
     setSessionStart(Date.now()); setScreen("session");
   }
 
-  function markSet(idx) { setSessionSets(prev => prev.map((s, i) => i === idx ? { ...s, done: !s.done } : s)); }
-  function updateActualReps(idx, val) { setSessionSets(prev => prev.map((s, i) => i === idx ? { ...s, actualReps: val } : s)); }
+  function markSet(idx) {
+    setSessionSets(prev => prev.map((s, i) => i === idx ? { ...s, done: !s.done } : s));
+  }
+
+  function updateActualReps(idx, val) {
+    setSessionSets(prev => prev.map((s, i) => i === idx ? { ...s, actualReps: val } : s));
+  }
 
   function finishSession() {
     const duration = Math.floor((Date.now() - sessionStart) / 1000);
@@ -173,6 +277,22 @@ export default function App() {
     setLifts(prev => { const n = { ...prev }; delete n[lift]; return n; });
   }
 
+  function saveTM(lift) {
+    if (tmInput) setLifts(prev => ({ ...prev, [lift]: { trainingMax: parseFloat(tmInput) } }));
+    setEditingLift(null);
+  }
+
+  // ── History management ────────────────────────────────────────────────────
+
+  function requestDeleteHistory(h) {
+    setConfirmDelete({ id: h.id, label: `${h.lift} — ${fmtDate(h.date)} (${weekLabel(h.weekIdx)}, Cycle ${h.cycle})` });
+  }
+
+  function confirmDeleteHistory() {
+    setHistory(prev => prev.filter(h => h.id !== confirmDelete.id));
+    setConfirmDelete(null);
+  }
+
   // ── Progress helpers ──────────────────────────────────────────────────────
 
   function getProgressPoints(lift) {
@@ -194,42 +314,24 @@ export default function App() {
     const sessions = [...history].sort((a, b) => a.date.localeCompare(b.date)).map(h => {
       const amrap = h.sets.find(s => s.isAmrap);
       return {
-        Date: fmtDate(h.date),
-        Lift: h.lift,
-        Week: weekLabel(h.weekIdx),
-        Cycle: h.cycle,
-        "Set 1 (kg)": h.sets[0]?.weight ?? "",
-        "Set 1 Reps": h.sets[0]?.reps ?? "",
-        "Set 2 (kg)": h.sets[1]?.weight ?? "",
-        "Set 2 Reps": h.sets[1]?.reps ?? "",
-        "AMRAP (kg)": amrap?.weight ?? "",
-        "AMRAP Reps": amrap?.reps ?? "",
+        Date: fmtDate(h.date), Lift: h.lift, Week: weekLabel(h.weekIdx), Cycle: h.cycle,
+        "Set 1 (kg)": h.sets[0]?.weight ?? "", "Set 1 Reps": h.sets[0]?.reps ?? "",
+        "Set 2 (kg)": h.sets[1]?.weight ?? "", "Set 2 Reps": h.sets[1]?.reps ?? "",
+        "AMRAP (kg)": amrap?.weight ?? "", "AMRAP Reps": amrap?.reps ?? "",
         "Accessories": h.accessories.map(a => `${a.name}: ${a.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}`).join(" | "),
         "Duration": h.duration ? fmt(h.duration) : "",
       };
     });
-
     const tms = liftNames.map(l => ({
-      Lift: l,
-      "Training Max (kg)": lifts[l]?.trainingMax ?? "",
+      Lift: l, "Training Max (kg)": lifts[l]?.trainingMax ?? "",
       "PR — Best AMRAP Weight (kg)": getPR(l) ?? "No data",
     }));
-
     const progressSheets = {};
     liftNames.forEach(lift => {
       progressSheets[lift.slice(0, 28)] = [...history]
-        .filter(h => h.lift === lift)
-        .sort((a, b) => a.date.localeCompare(b.date))
-        .map(h => {
-          const amrap = h.sets.find(s => s.isAmrap);
-          return {
-            Date: fmtDate(h.date), Week: weekLabel(h.weekIdx), Cycle: h.cycle,
-            "AMRAP Weight (kg)": amrap?.weight ?? "",
-            "AMRAP Reps": amrap?.reps ?? "",
-          };
-        });
+        .filter(h => h.lift === lift).sort((a, b) => a.date.localeCompare(b.date))
+        .map(h => { const amrap = h.sets.find(s => s.isAmrap); return { Date: fmtDate(h.date), Week: weekLabel(h.weekIdx), Cycle: h.cycle, "AMRAP Weight (kg)": amrap?.weight ?? "", "AMRAP Reps": amrap?.reps ?? "" }; });
     });
-
     return { sessions, tms, progressSheets };
   }
 
@@ -252,70 +354,31 @@ export default function App() {
       XLSX.writeFile(wb, "531-tracker-export.xlsx");
       setExportMsg("Excel file downloaded!");
       setTimeout(() => setExportMsg(""), 3000);
-    } catch (e) {
-      setExportMsg("Export failed: " + e.message);
-    }
+    } catch (e) { setExportMsg("Export failed: " + e.message); }
   }
 
   function exportPDF() {
     const { sessions, tms } = buildExportData();
     const now = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-
-    const liftPRRows = tms.map(t =>
-      `<tr><td>${t.Lift}</td><td>${t["Training Max (kg)"]} kg</td><td class="gold">${t["PR — Best AMRAP Weight (kg)"]}${typeof t["PR — Best AMRAP Weight (kg)"] === "number" ? " kg" : ""}</td></tr>`
-    ).join("");
-
+    const liftPRRows = tms.map(t => `<tr><td>${t.Lift}</td><td>${t["Training Max (kg)"]} kg</td><td class="gold">${t["PR — Best AMRAP Weight (kg)"]}${typeof t["PR — Best AMRAP Weight (kg)"] === "number" ? " kg" : ""}</td></tr>`).join("");
     const sessionRows = sessions.slice(-30).reverse().map(s =>
-      `<tr>
-        <td>${s.Date}</td><td><strong>${s.Lift}</strong></td><td>${s.Week} / C${s.Cycle}</td>
-        <td>${s["Set 1 (kg)"]} kg × ${s["Set 1 Reps"]}</td>
-        <td>${s["Set 2 (kg)"]} kg × ${s["Set 2 Reps"]}</td>
-        <td class="gold"><strong>${s["AMRAP (kg)"]} kg × ${s["AMRAP Reps"]} ★</strong></td>
-        <td>${s.Duration}</td>
-      </tr>`
+      `<tr><td>${s.Date}</td><td><strong>${s.Lift}</strong></td><td>${s.Week}/C${s.Cycle}</td><td>${s["Set 1 (kg)"]}kg×${s["Set 1 Reps"]}</td><td>${s["Set 2 (kg)"]}kg×${s["Set 2 Reps"]}</td><td class="gold"><strong>${s["AMRAP (kg)"]}kg×${s["AMRAP Reps"]}★</strong></td><td>${s.Duration}</td></tr>`
     ).join("");
-
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>5/3/1 Tracker Export</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1a1a1a;background:#fff;padding:32px}
-  h1{font-size:28px;font-weight:800;letter-spacing:-0.5px;margin-bottom:4px}
-  .sub{font-size:12px;color:#888;margin-bottom:28px}
-  h2{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:#444;margin:28px 0 10px;border-bottom:2px solid #f0c040;padding-bottom:6px;display:inline-block}
-  table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px}
-  th{background:#1a1a1a;color:#f0c040;padding:8px 10px;text-align:left;font-size:10px;letter-spacing:0.1em;text-transform:uppercase}
-  td{padding:7px 10px;border-bottom:1px solid #eee;vertical-align:top}
-  tr:nth-child(even) td{background:#f9f9f9}
-  .gold{color:#b8860b;font-weight:700}
-  .footer{margin-top:32px;font-size:10px;color:#bbb;text-align:center}
-  @media print{body{padding:16px}}
-</style></head><body>
-<h1>5/3/1 Training Log</h1>
-<div class="sub">Exported ${now} · Cycle ${currentCycle} · ${weekLabel(currentWeek)}</div>
-<h2>Training Maxes &amp; PRs</h2>
-<table><thead><tr><th>Lift</th><th>Training Max</th><th>Best AMRAP Weight</th></tr></thead>
-<tbody>${liftPRRows}</tbody></table>
-<h2>Session History (last 30)</h2>
-<table><thead><tr><th>Date</th><th>Lift</th><th>Week/Cycle</th><th>Set 1</th><th>Set 2</th><th>AMRAP</th><th>Duration</th></tr></thead>
-<tbody>${sessionRows}</tbody></table>
-<div class="footer">Generated by 5/3/1 Tracker · ${now}</div>
-</body></html>`;
-
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>5/3/1 Export</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Helvetica Neue',sans-serif;color:#1a1a1a;padding:32px}h1{font-size:28px;font-weight:800;margin-bottom:4px}.sub{font-size:12px;color:#888;margin-bottom:28px}h2{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#444;margin:28px 0 10px;border-bottom:2px solid #f0c040;padding-bottom:6px;display:inline-block}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#1a1a1a;color:#f0c040;padding:8px 10px;text-align:left;font-size:10px;text-transform:uppercase}td{padding:7px 10px;border-bottom:1px solid #eee}.gold{color:#b8860b;font-weight:700}.footer{margin-top:32px;font-size:10px;color:#bbb;text-align:center}</style>
+</head><body><h1>5/3/1 Training Log</h1><div class="sub">Exported ${now} · Cycle ${currentCycle} · ${weekLabel(currentWeek)}</div>
+<h2>Training Maxes &amp; PRs</h2><table><thead><tr><th>Lift</th><th>Training Max</th><th>Best AMRAP Weight</th></tr></thead><tbody>${liftPRRows}</tbody></table>
+<h2>Session History (last 30)</h2><table><thead><tr><th>Date</th><th>Lift</th><th>Week/Cycle</th><th>Set 1</th><th>Set 2</th><th>AMRAP</th><th>Duration</th></tr></thead><tbody>${sessionRows}</tbody></table>
+<div class="footer">Generated by 5/3/1 Tracker · ${now}</div></body></html>`;
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const win = window.open(url, "_blank");
-    if (win) {
-      win.onload = () => win.print();
-      setExportMsg("PDF ready — use Print → Save as PDF");
-    } else {
-      const a = document.createElement("a");
-      a.href = url; a.download = "531-tracker.html"; a.click();
-      setExportMsg("Downloaded HTML — open and print to PDF");
-    }
+    if (win) { win.onload = () => win.print(); setExportMsg("PDF ready — Print → Save as PDF"); }
+    else { const a = document.createElement("a"); a.href = url; a.download = "531-tracker.html"; a.click(); setExportMsg("Downloaded — open and print to PDF"); }
     setTimeout(() => setExportMsg(""), 5000);
   }
 
-  // ── Colors & Styles ───────────────────────────────────────────────────────
+  // ── Styles ────────────────────────────────────────────────────────────────
 
   const C = {
     bg: "#111014", surface: "#19181f", border: "#2a2830",
@@ -363,341 +426,409 @@ export default function App() {
     return icons[name] || null;
   };
 
-  // ── SCREENS ───────────────────────────────────────────────────────────────
+  const allAccessoryExercises = [...PRESET_ACCESSORIES, ...customExercises];
+  const sessionAllDone = sessionSets.every(s => s.done);
 
-  const HomeScreen = () => (
-    <>
-      <div style={s.topBar}>
-        <div>
-          <div style={s.appTitle}>531 Tracker</div>
-          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>
-            {WEEKS[currentWeek].label}
-            <span style={{ fontSize: 13, color: C.muted, fontWeight: 400, marginLeft: 10 }}>Cycle {currentCycle}</span>
-          </div>
-        </div>
-        <div style={s.cycleTag}>C{currentCycle} · W{currentWeek + 1}</div>
-      </div>
-
-      <div style={{ display: "flex", margin: "16px 20px 0", background: C.surface, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
-        {WEEKS.map((w, i) => <button key={i} style={s.weekBadge(i === currentWeek)} onClick={() => setCurrentWeek(i)}>{w.label.replace("Week ", "W")}</button>)}
-      </div>
-
-      <div style={s.section}>
-        <div style={{ ...s.sectionTitle, marginTop: 20 }}>Choose Your Lift</div>
-        {liftNames.map(lift => {
-          const sets = calcSets(lifts[lift]?.trainingMax ?? 100, currentWeek);
-          const isCustom = !DEFAULT_LIFTS.includes(lift);
-          return (
-            <div key={lift} style={{ ...s.liftCard, borderColor: isCustom ? C.accentDim : C.border }} onClick={() => startSession(lift)}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div>
-                  <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1 }}>
-                    {lift}
-                    {isCustom && <span style={{ fontSize: 9, color: C.accent, background: "#2a2210", border: `1px solid ${C.accentDim}`, borderRadius: 4, padding: "2px 6px", marginLeft: 8, letterSpacing: "0.12em", verticalAlign: "middle" }}>CUSTOM</span>}
-                  </div>
-                  <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>TM: {lifts[lift]?.trainingMax} kg</div>
-                </div>
-                <div style={{ fontSize: 11, color: C.accent, letterSpacing: "0.1em", paddingTop: 4 }}>START ›</div>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                {sets.map((set, i) => (
-                  <div key={i} style={s.setPill(set.isAmrap)}>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: set.isAmrap ? C.accent : C.text }}>{set.weight}</div>
-                    <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>{set.reps} reps</div>
-                    <div style={{ fontSize: 9, color: C.muted, marginTop: 1 }}>{Math.round(set.pct * 100)}%</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </>
-  );
-
-  const SessionScreen = () => {
-    const allMainDone = sessionSets.every(s => s.done);
-    return (
-      <>
-        <div style={s.sessionHeader}>
-          <div>
-            <div style={{ fontSize: 11, color: C.muted, letterSpacing: "0.2em", textTransform: "uppercase" }}>{WEEKS[currentWeek].label}</div>
-            <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.1 }}>{sessionLift}</div>
-          </div>
-          <div style={s.timerBadge}>{fmt(elapsed)}</div>
-        </div>
-
-        <div style={s.section}>
-          <div style={s.sectionTitle}>Working Sets</div>
-          {sessionSets.map((set, i) => (
-            <div key={i} style={set.done ? s.setRowDone : s.setRow}>
-              <button style={s.checkBtn(set.done)} onClick={() => markSet(i)}>{set.done && "✓"}</button>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                  <span style={{ fontSize: 26, fontWeight: 700, color: set.isAmrap ? C.accent : C.text }}>{set.weight}</span>
-                  <span style={{ fontSize: 13, color: C.muted }}>kg</span>
-                  <span style={{ fontSize: 13, color: C.muted, marginLeft: 4 }}>{Math.round(set.pct * 100)}%</span>
-                </div>
-                <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{set.isAmrap ? "AMRAP — go all out!" : `${set.reps} reps`}</div>
-              </div>
-              {set.isAmrap && (
-                <div style={{ textAlign: "center" }}>
-                  <div style={{ ...s.label, marginBottom: 4 }}>Reps done</div>
-                  <input type="number" min={0} style={{ ...s.inputSm, width: 60 }} value={set.actualReps}
-                    onChange={e => updateActualReps(i, e.target.value)} placeholder="0" />
-                </div>
-              )}
-            </div>
-          ))}
-
-          <div style={s.divider} />
-          <div style={s.sectionTitle}>Accessories</div>
-
-          {accessories.map((acc, i) => (
-            <div key={i} style={s.histCard}>
-              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{acc.name}</div>
-              {acc.sets.map((set, j) => (
-                <div key={j} style={{ fontSize: 13, color: C.muted, marginBottom: 3 }}>
-                  Set {j + 1}: <span style={{ color: C.text }}>{set.reps} reps</span> @ <span style={{ color: C.accent }}>{set.weight} kg</span>
-                </div>
-              ))}
-            </div>
-          ))}
-
-          {addingAccessory ? (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 12 }}>
-              <label style={s.label}>Exercise</label>
-              <select style={{ ...s.input, marginBottom: 12 }} value={accName} onChange={e => setAccName(e.target.value)}>
-                <option value="">Select exercise…</option>
-                {[...PRESET_ACCESSORIES, ...customExercises].map(ex => <option key={ex}>{ex}</option>)}
-              </select>
-              <label style={s.label}>Sets</label>
-              {accSets.map((set, i) => (
-                <div key={i} style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: C.muted, width: 20 }}>{i + 1}</span>
-                  <div><div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>Reps</div>
-                    <input type="number" style={s.inputSm} value={set.reps} min={1} onChange={e => updateAccSet(i, "reps", e.target.value)} /></div>
-                  <div><div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>kg</div>
-                    <input type="number" style={s.inputSm} value={set.weight} min={0} step={2.5} onChange={e => updateAccSet(i, "weight", e.target.value)} /></div>
-                </div>
-              ))}
-              <button style={{ ...s.btnGhost, fontSize: 12, marginBottom: 12 }} onClick={() => setAccSets(prev => [...prev, { reps: 10, weight: 40 }])}>+ Add Set</button>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button style={{ ...s.btnOutline, flex: 1 }} onClick={() => { setAddingAccessory(false); setAccName(""); setAccSets([{ reps: 10, weight: 40 }]); }}>Cancel</button>
-                <button style={{ ...s.btn, flex: 1 }} onClick={addAccessory}>Add</button>
-              </div>
-            </div>
-          ) : (
-            <button style={{ ...s.btnOutline, width: "100%", marginBottom: 16 }} onClick={() => setAddingAccessory(true)}>+ Add Accessory</button>
-          )}
-
-          <button style={{ ...s.btn, background: allMainDone ? C.accent : C.accentDim }} onClick={finishSession}>Finish Session</button>
-          <button style={{ ...s.btnGhost, width: "100%", marginTop: 10, textAlign: "center" }} onClick={() => { setSessionStart(null); setScreen("home"); }}>Discard</button>
-        </div>
-      </>
-    );
-  };
-
-  const HistoryScreen = () => (
-    <div style={s.section}>
-      <div style={{ ...s.sectionTitle, marginTop: 8 }}>Session History</div>
-      {history.length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
-      {[...history].sort((a, b) => b.date.localeCompare(a.date)).map(h => (
-        <div key={h.id} style={s.histCard}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{h.lift}</div>
-              <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)} · {weekLabel(h.weekIdx)} · C{h.cycle}</div>
-            </div>
-            <div style={{ fontSize: 12, color: C.muted }}>{h.duration ? fmt(h.duration) : "—"}</div>
-          </div>
-          {h.sets.map((set, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4, fontSize: 14 }}>
-              <span style={{ color: C.muted, width: 50 }}>Set {i + 1}</span>
-              <span style={{ fontWeight: 600 }}>{set.weight} kg</span>
-              <span style={{ color: set.isAmrap ? C.accent : C.muted }}>{set.reps} reps {set.isAmrap ? "★" : ""}</span>
-            </div>
-          ))}
-          {h.accessories.length > 0 && (
-            <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.15em", marginBottom: 4 }}>ACCESSORIES</div>
-              {h.accessories.map((acc, i) => (
-                <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>
-                  {acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-
-  const ProgressScreen = () => {
-    const pts = getProgressPoints(progressLift);
-    const pr = getPR(progressLift);
-    const liftHistory = history.filter(h => h.lift === progressLift);
-    return (
-      <div style={s.section}>
-        <div style={{ ...s.sectionTitle, marginTop: 8 }}>Progress</div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-          {liftNames.map(l => (
-            <button key={l} style={{ background: l === progressLift ? C.accent : C.surface, color: l === progressLift ? C.bg : C.muted, border: `1px solid ${l === progressLift ? C.accent : C.border}`, borderRadius: 8, padding: "7px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
-              onClick={() => setProgressLift(l)}>{l}</button>
-          ))}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
-            <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>TRAINING MAX</div>
-            <div style={{ fontSize: 32, fontWeight: 700 }}>{lifts[progressLift]?.trainingMax ?? "—"}</div>
-            <div style={{ fontSize: 12, color: C.muted }}>kg</div>
-          </div>
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
-            <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>BEST AMRAP WT</div>
-            <div style={{ fontSize: 32, fontWeight: 700, color: C.accent }}>{pr ?? "—"}</div>
-            <div style={{ fontSize: 12, color: C.muted }}>{pr ? "kg" : "no data"}</div>
-          </div>
-        </div>
-        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 20 }}>
-          <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 12 }}>AMRAP WEIGHT OVER TIME</div>
-          <LineChart points={pts} color={C.accent} height={90} />
-        </div>
-        <div style={s.sectionTitle}>Session Log — {progressLift}</div>
-        {liftHistory.length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
-        {[...liftHistory].sort((a, b) => b.date.localeCompare(a.date)).map(h => {
-          const amrap = h.sets.find(s => s.isAmrap);
-          return (
-            <div key={h.id} style={{ ...s.histCard, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontSize: 16, fontWeight: 700 }}>{weekLabel(h.weekIdx)} · C{h.cycle}</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)}</div>
-              </div>
-              {amrap && <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 22, fontWeight: 700, color: C.accent }}>{amrap.weight} kg</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{amrap.reps} reps AMRAP</div>
-              </div>}
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  const SettingsScreen = () => (
-    <div style={s.section}>
-      <div style={{ ...s.sectionTitle, marginTop: 8 }}>Main Lifts & Training Maxes</div>
-      {liftNames.map(lift => (
-        <div key={lift} style={s.histCard}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 700 }}>
-                {lift}
-                {!DEFAULT_LIFTS.includes(lift) && <span style={{ fontSize: 9, color: C.accent, background: "#2a2210", border: `1px solid ${C.accentDim}`, borderRadius: 4, padding: "2px 6px", marginLeft: 8, letterSpacing: "0.12em" }}>CUSTOM</span>}
-              </div>
-              <div style={{ fontSize: 13, color: C.muted }}>TM: {lifts[lift]?.trainingMax ?? "—"} kg</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              {editingLift === lift ? (
-                <>
-                  <input type="number" style={{ ...s.inputSm, width: 80 }} value={tmInput} step={2.5} min={0}
-                    onChange={e => setTmInput(e.target.value)} autoFocus />
-                  <button style={{ ...s.btn, width: "auto", padding: "8px 14px", fontSize: 13 }}
-                    onClick={() => { if (tmInput) setLifts(prev => ({ ...prev, [lift]: { trainingMax: parseFloat(tmInput) } })); setEditingLift(null); }}>Save</button>
-                </>
-              ) : (
-                <>
-                  <button style={s.btnGhost} onClick={() => { setEditingLift(lift); setTmInput(lifts[lift]?.trainingMax ?? ""); }}>Edit</button>
-                  {!DEFAULT_LIFTS.includes(lift) && <button style={s.btnDanger} onClick={() => removeMainLift(lift)}>✕</button>}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      ))}
-      <button style={{ ...s.btnOutline, width: "100%", marginTop: 4 }} onClick={() => setShowAddLift(true)}>+ Add Main Lift</button>
-
-      <div style={s.divider} />
-      <div style={s.sectionTitle}>Cycle & Week</div>
-      <div style={{ ...s.histCard, marginBottom: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ fontSize: 16 }}>Current Week</div>
-          <div style={{ display: "flex", gap: 6 }}>
-            {WEEKS.map((w, i) => <button key={i} style={{ background: i === currentWeek ? C.accent : C.surface, color: i === currentWeek ? C.bg : C.muted, border: `1px solid ${i === currentWeek ? C.accent : C.border}`, borderRadius: 6, padding: "6px 8px", fontFamily: "inherit", fontSize: 11, cursor: "pointer" }} onClick={() => setCurrentWeek(i)}>{w.label.replace("Week ", "W")}</button>)}
-          </div>
-        </div>
-      </div>
-      <div style={{ ...s.histCard, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontSize: 16 }}>Cycle</div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button style={s.btnGhost} onClick={() => setCurrentCycle(c => Math.max(1, c - 1))}>−</button>
-          <span style={{ fontSize: 22, fontWeight: 700 }}>{currentCycle}</span>
-          <button style={s.btnGhost} onClick={() => setCurrentCycle(c => c + 1)}>+</button>
-        </div>
-      </div>
-
-      <div style={s.divider} />
-      <div style={s.sectionTitle}>Custom Accessory Exercises</div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-        <input style={{ ...s.input, flex: 1 }} placeholder="Exercise name…" value={newExInput} onChange={e => setNewExInput(e.target.value)} />
-        <button style={{ ...s.btn, width: "auto", padding: "10px 16px" }} onClick={() => { if (newExInput.trim()) { setCustomExercises(prev => [...prev, newExInput.trim()]); setNewExInput(""); } }}>Add</button>
-      </div>
-      {customExercises.map((ex, i) => (
-        <div key={i} style={{ ...s.histCard, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <span style={{ fontSize: 15 }}>{ex}</span>
-          <button style={s.btnGhost} onClick={() => setCustomExercises(prev => prev.filter((_, j) => j !== i))}>Remove</button>
-        </div>
-      ))}
-
-      <div style={s.divider} />
-      <div style={s.sectionTitle}>Export Data</div>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 24 }}>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
-          Includes all sessions, training maxes, PRs, and per-lift progress. Excel has separate tabs per lift.
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button style={{ ...s.btn, flex: 1, background: "#162516", color: "#4caf7a", border: "1px solid #2a4a2a" }} onClick={exportExcel}>📊 Excel</button>
-          <button style={{ ...s.btn, flex: 1, background: "#251616", color: "#e07070", border: "1px solid #4a2a2a" }} onClick={exportPDF}>📄 PDF</button>
-        </div>
-        {exportMsg && <div style={{ marginTop: 12, fontSize: 13, color: C.accent, textAlign: "center", lineHeight: 1.5 }}>✓ {exportMsg}</div>}
-      </div>
-    </div>
-  );
-
-  const AddLiftModal = () => (
-    <div style={s.modal} onClick={e => { if (e.target === e.currentTarget) setShowAddLift(false); }}>
-      <div style={s.modalBox}>
-        <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Add Main Lift</div>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6 }}>
-          Uses the same 5/3/1 percentages. Training Max = ~90% of your 1RM.
-        </div>
-        <div style={{ marginBottom: 14 }}>
-          <label style={s.label}>Lift Name</label>
-          <input style={s.input} placeholder="e.g. Close-Grip Bench, Pause Squat…"
-            value={newLiftName} onChange={e => setNewLiftName(e.target.value)} autoFocus />
-        </div>
-        <div style={{ marginBottom: 22 }}>
-          <label style={s.label}>Training Max (kg)</label>
-          <input type="number" style={s.input} placeholder="e.g. 100"
-            value={newLiftTM} onChange={e => setNewLiftTM(e.target.value)} min={0} step={2.5} />
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button style={{ ...s.btnOutline, flex: 1 }} onClick={() => { setShowAddLift(false); setNewLiftName(""); setNewLiftTM(""); }}>Cancel</button>
-          <button style={{ ...s.btn, flex: 1, opacity: (!newLiftName.trim() || !newLiftTM) ? 0.4 : 1 }}
-            disabled={!newLiftName.trim() || !newLiftTM} onClick={addMainLift}>Add Lift</button>
-        </div>
-      </div>
-    </div>
-  );
+  // ── RENDER ────────────────────────────────────────────────────────────────
 
   return (
     <div style={s.app}>
       <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&display=swap" rel="stylesheet" />
-      {screen === "home" && <HomeScreen />}
-      {screen === "session" && <SessionScreen />}
-      {screen === "history" && <HistoryScreen />}
-      {screen === "progress" && <ProgressScreen />}
-      {screen === "settings" && <SettingsScreen />}
-      {showAddLift && <AddLiftModal />}
+
+      {/* ── HOME ── */}
+      {screen === "home" && (
+        <>
+          <div style={s.topBar}>
+            <div>
+              <div style={s.appTitle}>531 Tracker</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>
+                {WEEKS[currentWeek].label}
+                <span style={{ fontSize: 13, color: C.muted, fontWeight: 400, marginLeft: 10 }}>Cycle {currentCycle}</span>
+              </div>
+            </div>
+            <div style={s.cycleTag}>C{currentCycle} · W{currentWeek + 1}</div>
+          </div>
+          <div style={{ display: "flex", margin: "16px 20px 0", background: C.surface, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
+            {WEEKS.map((w, i) => <button key={i} style={s.weekBadge(i === currentWeek)} onClick={() => setCurrentWeek(i)}>{w.label.replace("Week ", "W")}</button>)}
+          </div>
+          <div style={s.section}>
+            <div style={{ ...s.sectionTitle, marginTop: 20 }}>Choose Your Lift</div>
+            {liftNames.map(lift => {
+              const sets = calcSets(lifts[lift]?.trainingMax ?? 100, currentWeek);
+              const isCustom = !DEFAULT_LIFTS.includes(lift);
+              return (
+                <div key={lift} style={{ ...s.liftCard, borderColor: isCustom ? C.accentDim : C.border }} onClick={() => startSession(lift)}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div>
+                      <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1 }}>
+                        {lift}
+                        {isCustom && <span style={{ fontSize: 9, color: C.accent, background: "#2a2210", border: `1px solid ${C.accentDim}`, borderRadius: 4, padding: "2px 6px", marginLeft: 8, letterSpacing: "0.12em", verticalAlign: "middle" }}>CUSTOM</span>}
+                      </div>
+                      <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>TM: {lifts[lift]?.trainingMax} kg</div>
+                    </div>
+                    <div style={{ fontSize: 11, color: C.accent, letterSpacing: "0.1em", paddingTop: 4 }}>START ›</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    {sets.map((set, i) => (
+                      <div key={i} style={s.setPill(set.isAmrap)}>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: set.isAmrap ? C.accent : C.text }}>{set.weight}</div>
+                        <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>{set.reps} reps</div>
+                        <div style={{ fontSize: 9, color: C.muted, marginTop: 1 }}>{Math.round(set.pct * 100)}%</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ── SESSION ── */}
+      {screen === "session" && (
+        <>
+          <div style={s.sessionHeader}>
+            <div>
+              <div style={{ fontSize: 11, color: C.muted, letterSpacing: "0.2em", textTransform: "uppercase" }}>{WEEKS[currentWeek].label}</div>
+              <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.1 }}>{sessionLift}</div>
+            </div>
+            <div style={s.timerBadge}>{fmt(elapsed)}</div>
+          </div>
+          <div style={s.section}>
+            <div style={s.sectionTitle}>Working Sets</div>
+            {sessionSets.map((set, i) => (
+              <div key={`set-${i}`} style={set.done ? s.setRowDone : s.setRow}>
+                <button style={s.checkBtn(set.done)} onClick={() => markSet(i)}>{set.done && "✓"}</button>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                    <span style={{ fontSize: 26, fontWeight: 700, color: set.isAmrap ? C.accent : C.text }}>{set.weight}</span>
+                    <span style={{ fontSize: 13, color: C.muted }}>kg</span>
+                    <span style={{ fontSize: 13, color: C.muted, marginLeft: 4 }}>{Math.round(set.pct * 100)}%</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{set.isAmrap ? "AMRAP — go all out!" : `${set.reps} reps`}</div>
+                </div>
+                {set.isAmrap && (
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ ...s.label, marginBottom: 4 }}>Reps done</div>
+                    {/* StableNumberInput prevents keyboard dismiss on re-render */}
+                    <StableNumberInput
+                      value={set.actualReps}
+                      onChange={val => updateActualReps(i, val)}
+                      style={s.inputSm}
+                      placeholder="0"
+                      min={0}
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <div style={s.divider} />
+            <div style={s.sectionTitle}>Accessories</div>
+
+            {accessories.map((acc, i) => (
+              <div key={i} style={s.histCard}>
+                <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{acc.name}</div>
+                {acc.sets.map((set, j) => (
+                  <div key={j} style={{ fontSize: 13, color: C.muted, marginBottom: 3 }}>
+                    Set {j + 1}: <span style={{ color: C.text }}>{set.reps} reps</span> @ <span style={{ color: C.accent }}>{set.weight} kg</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {addingAccessory ? (
+              <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 12 }}>
+                <label style={s.label}>Exercise</label>
+                <select style={{ ...s.input, marginBottom: 12 }} value={accName} onChange={e => setAccName(e.target.value)}>
+                  <option value="">Select exercise…</option>
+                  {allAccessoryExercises.map(ex => <option key={ex} value={ex}>{ex}</option>)}
+                </select>
+                <label style={s.label}>Sets</label>
+                {accSets.map((set, i) => (
+                  <div key={`accset-${i}`} style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: C.muted, width: 20 }}>{i + 1}</span>
+                    <div>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>Reps</div>
+                      <StableNumberInput value={set.reps} onChange={v => updateAccSet(i, "reps", v)} style={s.inputSm} min={1} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>kg</div>
+                      <StableNumberInput value={set.weight} onChange={v => updateAccSet(i, "weight", v)} style={s.inputSm} min={0} step={2.5} />
+                    </div>
+                  </div>
+                ))}
+                <button style={{ ...s.btnGhost, fontSize: 12, marginBottom: 12 }}
+                  onClick={() => setAccSets(prev => [...prev, { reps: 10, weight: 40 }])}>+ Add Set</button>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button style={{ ...s.btnOutline, flex: 1 }}
+                    onClick={() => { setAddingAccessory(false); setAccName(""); setAccSets([{ reps: 10, weight: 40 }]); }}>Cancel</button>
+                  <button style={{ ...s.btn, flex: 1 }} onClick={addAccessory}>Add</button>
+                </div>
+              </div>
+            ) : (
+              <button style={{ ...s.btnOutline, width: "100%", marginBottom: 16 }}
+                onClick={() => setAddingAccessory(true)}>+ Add Accessory</button>
+            )}
+
+            <button style={{ ...s.btn, background: sessionAllDone ? C.accent : C.accentDim }} onClick={finishSession}>Finish Session</button>
+            <button style={{ ...s.btnGhost, width: "100%", marginTop: 10, textAlign: "center" }}
+              onClick={() => { setSessionStart(null); setScreen("home"); }}>Discard</button>
+          </div>
+        </>
+      )}
+
+      {/* ── HISTORY ── */}
+      {screen === "history" && (
+        <div style={s.section}>
+          <div style={{ ...s.sectionTitle, marginTop: 8 }}>Session History</div>
+          {history.length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
+          {[...history].sort((a, b) => b.date.localeCompare(a.date)).map(h => (
+            <div key={h.id} style={s.histCard}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{h.lift}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)} · {weekLabel(h.weekIdx)} · C{h.cycle}</div>
+                </div>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  <div style={{ fontSize: 12, color: C.muted }}>{h.duration ? fmt(h.duration) : "—"}</div>
+                  <button style={{ ...s.btnDanger, padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
+                    onClick={() => requestDeleteHistory(h)}>✕</button>
+                </div>
+              </div>
+              {h.sets.map((set, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4, fontSize: 14 }}>
+                  <span style={{ color: C.muted, width: 50 }}>Set {i + 1}</span>
+                  <span style={{ fontWeight: 600 }}>{set.weight} kg</span>
+                  <span style={{ color: set.isAmrap ? C.accent : C.muted }}>{set.reps} reps {set.isAmrap ? "★" : ""}</span>
+                </div>
+              ))}
+              {h.accessories.length > 0 && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.15em", marginBottom: 4 }}>ACCESSORIES</div>
+                  {h.accessories.map((acc, i) => (
+                    <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>
+                      {acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── PROGRESS ── */}
+      {screen === "progress" && (
+        <div style={s.section}>
+          <div style={{ ...s.sectionTitle, marginTop: 8 }}>Progress</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+            {liftNames.map(l => (
+              <button key={l} style={{ background: l === progressLift ? C.accent : C.surface, color: l === progressLift ? C.bg : C.muted, border: `1px solid ${l === progressLift ? C.accent : C.border}`, borderRadius: 8, padding: "7px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                onClick={() => setProgressLift(l)}>{l}</button>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+              <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>TRAINING MAX</div>
+              <div style={{ fontSize: 32, fontWeight: 700 }}>{lifts[progressLift]?.trainingMax ?? "—"}</div>
+              <div style={{ fontSize: 12, color: C.muted }}>kg</div>
+            </div>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+              <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>BEST AMRAP WT</div>
+              <div style={{ fontSize: 32, fontWeight: 700, color: C.accent }}>{getPR(progressLift) ?? "—"}</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{getPR(progressLift) ? "kg" : "no data"}</div>
+            </div>
+          </div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 20 }}>
+            <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 12 }}>AMRAP WEIGHT OVER TIME</div>
+            <LineChart points={getProgressPoints(progressLift)} color={C.accent} height={90} />
+          </div>
+          <div style={s.sectionTitle}>Session Log — {progressLift}</div>
+          {history.filter(h => h.lift === progressLift).length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
+          {[...history].filter(h => h.lift === progressLift).sort((a, b) => b.date.localeCompare(a.date)).map(h => {
+            const amrap = h.sets.find(s => s.isAmrap);
+            return (
+              <div key={h.id} style={{ ...s.histCard, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700 }}>{weekLabel(h.weekIdx)} · C{h.cycle}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)}</div>
+                </div>
+                {amrap && <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: C.accent }}>{amrap.weight} kg</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{amrap.reps} reps AMRAP</div>
+                </div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── SETTINGS ── */}
+      {screen === "settings" && (
+        <div style={s.section}>
+          <div style={{ ...s.sectionTitle, marginTop: 8 }}>Main Lifts & Training Maxes</div>
+          {liftNames.map(lift => (
+            <div key={lift} style={s.histCard}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 700 }}>
+                    {lift}
+                    {!DEFAULT_LIFTS.includes(lift) && <span style={{ fontSize: 9, color: C.accent, background: "#2a2210", border: `1px solid ${C.accentDim}`, borderRadius: 4, padding: "2px 6px", marginLeft: 8, letterSpacing: "0.12em" }}>CUSTOM</span>}
+                  </div>
+                  <div style={{ fontSize: 13, color: C.muted }}>TM: {lifts[lift]?.trainingMax ?? "—"} kg</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {editingLift === lift ? (
+                    <>
+                      <StableNumberInput
+                        value={tmInput}
+                        onChange={v => setTmInput(v)}
+                        style={{ ...s.inputSm, width: 80 }}
+                        min={0}
+                        step={2.5}
+                      />
+                      <button style={{ ...s.btn, width: "auto", padding: "8px 14px", fontSize: 13 }}
+                        onClick={() => saveTM(lift)}>Save</button>
+                    </>
+                  ) : (
+                    <>
+                      <button style={s.btnGhost} onClick={() => { setEditingLift(lift); setTmInput(lifts[lift]?.trainingMax ?? ""); }}>Edit</button>
+                      {!DEFAULT_LIFTS.includes(lift) && <button style={s.btnDanger} onClick={() => removeMainLift(lift)}>✕</button>}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+          <button style={{ ...s.btnOutline, width: "100%", marginTop: 4 }} onClick={() => setShowAddLift(true)}>+ Add Main Lift</button>
+
+          <div style={s.divider} />
+          <div style={s.sectionTitle}>Cycle & Week</div>
+          <div style={{ ...s.histCard, marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 16 }}>Current Week</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {WEEKS.map((w, i) => <button key={i} style={{ background: i === currentWeek ? C.accent : C.surface, color: i === currentWeek ? C.bg : C.muted, border: `1px solid ${i === currentWeek ? C.accent : C.border}`, borderRadius: 6, padding: "6px 8px", fontFamily: "inherit", fontSize: 11, cursor: "pointer" }} onClick={() => setCurrentWeek(i)}>{w.label.replace("Week ", "W")}</button>)}
+              </div>
+            </div>
+          </div>
+          <div style={{ ...s.histCard, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 16 }}>Cycle</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <button style={s.btnGhost} onClick={() => setCurrentCycle(c => Math.max(1, c - 1))}>−</button>
+              <span style={{ fontSize: 22, fontWeight: 700 }}>{currentCycle}</span>
+              <button style={s.btnGhost} onClick={() => setCurrentCycle(c => c + 1)}>+</button>
+            </div>
+          </div>
+
+          <div style={s.divider} />
+          <div style={s.sectionTitle}>Accessory Exercise List</div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+            These appear in the dropdown during sessions.
+          </div>
+          {PRESET_ACCESSORIES.map(ex => (
+            <div key={ex} style={{ ...s.histCard, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, padding: "10px 14px" }}>
+              <span style={{ fontSize: 14, color: C.muted }}>{ex}</span>
+              <span style={{ fontSize: 10, color: C.border, letterSpacing: "0.1em" }}>PRESET</span>
+            </div>
+          ))}
+          {customExercises.map((ex, i) => (
+            <div key={`cex-${i}`} style={{ ...s.histCard, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, padding: "10px 14px" }}>
+              {editingExIdx === i ? (
+                <>
+                  <StableTextInput
+                    value={editingExValue}
+                    onChange={v => setEditingExValue(v)}
+                    style={{ ...s.input, flex: 1, marginRight: 8 }}
+                  />
+                  <button style={{ ...s.btn, width: "auto", padding: "8px 12px", fontSize: 13 }}
+                    onClick={() => {
+                      if (editingExValue.trim()) setCustomExercises(prev => prev.map((e, j) => j === i ? editingExValue.trim() : e));
+                      setEditingExIdx(null);
+                    }}>Save</button>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontSize: 14 }}>{ex}</span>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button style={s.btnGhost} onClick={() => { setEditingExIdx(i); setEditingExValue(ex); }}>Edit</button>
+                    <button style={s.btnDanger} onClick={() => setCustomExercises(prev => prev.filter((_, j) => j !== i))}>✕</button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 10, marginTop: 8, marginBottom: 12 }}>
+            <StableTextInput
+              value={newExInput}
+              onChange={v => setNewExInput(v)}
+              style={{ ...s.input, flex: 1 }}
+              placeholder="Add custom exercise…"
+              onKeyDown={e => {
+                if (e.key === "Enter" && newExInput.trim()) {
+                  setCustomExercises(prev => [...prev, newExInput.trim()]);
+                  setNewExInput("");
+                }
+              }}
+            />
+            <button style={{ ...s.btn, width: "auto", padding: "10px 16px" }}
+              onClick={() => { if (newExInput.trim()) { setCustomExercises(prev => [...prev, newExInput.trim()]); setNewExInput(""); } }}>Add</button>
+          </div>
+
+          <div style={s.divider} />
+          <div style={s.sectionTitle}>Export Data</div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 24 }}>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
+              Includes all sessions, training maxes, PRs, and per-lift progress.
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ ...s.btn, flex: 1, background: "#162516", color: "#4caf7a", border: "1px solid #2a4a2a" }} onClick={exportExcel}>📊 Excel</button>
+              <button style={{ ...s.btn, flex: 1, background: "#251616", color: "#e07070", border: "1px solid #4a2a2a" }} onClick={exportPDF}>📄 PDF</button>
+            </div>
+            {exportMsg && <div style={{ marginTop: 12, fontSize: 13, color: C.accent, textAlign: "center", lineHeight: 1.5 }}>✓ {exportMsg}</div>}
+          </div>
+        </div>
+      )}
+
+      {/* ── Add Lift Modal ── */}
+      {showAddLift && (
+        <div style={s.modal} onClick={e => { if (e.target === e.currentTarget) setShowAddLift(false); }}>
+          <div style={s.modalBox}>
+            <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Add Main Lift</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6 }}>
+              Uses the same 5/3/1 percentages. Training Max = ~90% of your 1RM.
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={s.label}>Lift Name</label>
+              <input style={s.input} placeholder="e.g. Close-Grip Bench…"
+                value={newLiftName} onChange={e => setNewLiftName(e.target.value)} />
+            </div>
+            <div style={{ marginBottom: 22 }}>
+              <label style={s.label}>Training Max (kg)</label>
+              <input type="number" style={s.input} placeholder="e.g. 100"
+                value={newLiftTM} onChange={e => setNewLiftTM(e.target.value)} min={0} step={2.5} />
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ ...s.btnOutline, flex: 1 }} onClick={() => { setShowAddLift(false); setNewLiftName(""); setNewLiftTM(""); }}>Cancel</button>
+              <button style={{ ...s.btn, flex: 1, opacity: (!newLiftName.trim() || !newLiftTM) ? 0.4 : 1 }}
+                disabled={!newLiftName.trim() || !newLiftTM} onClick={addMainLift}>Add Lift</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Confirm Delete ── */}
+      {confirmDelete && (
+        <ConfirmModal
+          message={`Are you sure you want to delete this entry?\n\n${confirmDelete.label}`}
+          onConfirm={confirmDeleteHistory}
+          onCancel={() => setConfirmDelete(null)}
+          C={C} s={s}
+        />
+      )}
+
+      {/* ── Bottom Nav ── */}
       {screen !== "session" && (
         <nav style={s.bottomNav}>
           {[{ id: "home", label: "Home", icon: "home" }, { id: "progress", label: "Progress", icon: "chart" }, { id: "history", label: "History", icon: "history" }, { id: "settings", label: "Settings", icon: "settings" }].map(item => (
