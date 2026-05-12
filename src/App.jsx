@@ -6,6 +6,7 @@ import * as XLSX from "xlsx";
 const DEFAULT_LIFTS = ["Squat", "Bench Press", "Deadlift", "Overhead Press"];
 
 const PRESET_ACCESSORIES = [
+  "WOD",
   "Dumbbell Row", "Lat Pulldown", "Pull-ups", "Chin-ups",
   "Leg Press", "Romanian Deadlift", "Incline Bench", "Dips",
   "Barbell Curl", "Tricep Pushdown", "Face Pulls", "Cable Row",
@@ -192,6 +193,11 @@ export default function App() {
   const [addingAccessory, setAddingAccessory] = useState(false);
   const [accName, setAccName] = useState("");
   const [accSets, setAccSets] = useState([{ reps: 10, weight: 40 }]);
+  // WOD-specific state
+  const [wodDescription, setWodDescription] = useState("");
+  const [wodResultType, setWodResultType] = useState("time"); // "time" | "reps"
+  const [wodTime, setWodTime] = useState("");   // e.g. "12:34"
+  const [wodReps, setWodReps] = useState("");
 
   // UI state
   const [progressLift, setProgressLift] = useState(liftNames[0] ?? "Squat");
@@ -225,6 +231,7 @@ export default function App() {
     const sets = calcSets(lifts[lift].trainingMax, currentWeek).map(s => ({ ...s, actualReps: "", done: false }));
     setSessionLift(lift); setSessionSets(sets); setAccessories([]);
     setAddingAccessory(false); setAccName(""); setAccSets([{ reps: 10, weight: 40 }]);
+    setWodDescription(""); setWodResultType("time"); setWodTime(""); setWodReps("");
     setSessionStart(Date.now()); setScreen("session");
   }
 
@@ -256,10 +263,27 @@ export default function App() {
     setScreen("home");
   }
 
+  function resetAccForm() {
+    setAccName(""); setAccSets([{ reps: 10, weight: 40 }]);
+    setWodDescription(""); setWodResultType("time"); setWodTime(""); setWodReps("");
+    setAddingAccessory(false);
+  }
+
   function addAccessory() {
     if (!accName) return;
-    setAccessories(prev => [...prev, { name: accName, sets: accSets }]);
-    setAccName(""); setAccSets([{ reps: 10, weight: 40 }]); setAddingAccessory(false);
+    if (accName === "WOD") {
+      setAccessories(prev => [...prev, {
+        name: "WOD",
+        isWod: true,
+        description: wodDescription,
+        resultType: wodResultType,
+        result: wodResultType === "time" ? wodTime : wodReps,
+        sets: [],
+      }]);
+    } else {
+      setAccessories(prev => [...prev, { name: accName, sets: accSets }]);
+    }
+    resetAccForm();
   }
 
   function updateAccSet(i, field, val) {
@@ -648,12 +672,24 @@ export default function App() {
 
             {accessories.map((acc, i) => (
               <div key={i} style={s.histCard}>
-                <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{acc.name}</div>
-                {acc.sets.map((set, j) => (
-                  <div key={j} style={{ fontSize: 13, color: C.muted, marginBottom: 3 }}>
-                    Set {j + 1}: <span style={{ color: C.text }}>{set.reps} reps</span> @ <span style={{ color: C.accent }}>{set.weight} kg</span>
-                  </div>
-                ))}
+                <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>{acc.name}</div>
+                {acc.isWod ? (
+                  <>
+                    {acc.description ? <div style={{ fontSize: 13, color: C.muted, marginBottom: 4, lineHeight: 1.5 }}>{acc.description}</div> : null}
+                    <div style={{ fontSize: 13 }}>
+                      {acc.resultType === "time"
+                        ? <span>Time: <span style={{ color: C.accent, fontWeight: 700 }}>{acc.result || "—"}</span></span>
+                        : <span>Reps: <span style={{ color: C.accent, fontWeight: 700 }}>{acc.result || "—"}</span></span>
+                      }
+                    </div>
+                  </>
+                ) : (
+                  acc.sets.map((set, j) => (
+                    <div key={j} style={{ fontSize: 13, color: C.muted, marginBottom: 3 }}>
+                      Set {j + 1}: <span style={{ color: C.text }}>{set.reps} reps</span> @ <span style={{ color: C.accent }}>{set.weight} kg</span>
+                    </div>
+                  ))
+                )}
               </div>
             ))}
 
@@ -664,25 +700,75 @@ export default function App() {
                   <option value="">Select exercise…</option>
                   {allAccessoryExercises.map(ex => <option key={ex} value={ex}>{ex}</option>)}
                 </select>
-                <label style={s.label}>Sets</label>
-                {accSets.map((set, i) => (
-                  <div key={`accset-${i}`} style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
-                    <span style={{ fontSize: 12, color: C.muted, width: 20 }}>{i + 1}</span>
-                    <div>
-                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>Reps</div>
-                      <StableNumberInput value={set.reps} onChange={v => updateAccSet(i, "reps", v)} style={s.inputSm} min={1} />
+
+                {/* WOD-specific form */}
+                {accName === "WOD" ? (
+                  <>
+                    <label style={s.label}>WOD Description</label>
+                    <StableTextInput
+                      value={wodDescription}
+                      onChange={v => setWodDescription(v)}
+                      style={{ ...s.input, marginBottom: 12 }}
+                      placeholder="e.g. 21-15-9 Thrusters & Pull-ups…"
+                    />
+                    <label style={s.label}>Result Type</label>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      {["time", "reps"].map(t => (
+                        <button key={t} style={{
+                          flex: 1, padding: "10px", borderRadius: 8, fontFamily: "inherit",
+                          fontSize: 14, fontWeight: 700, cursor: "pointer", textTransform: "uppercase",
+                          background: wodResultType === t ? C.accent : C.surface,
+                          color: wodResultType === t ? C.bg : C.muted,
+                          border: `1px solid ${wodResultType === t ? C.accent : C.border}`,
+                        }} onClick={() => setWodResultType(t)}>{t === "time" ? "⏱ Time" : "🔢 Reps"}</button>
+                      ))}
                     </div>
-                    <div>
-                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>kg</div>
-                      <StableNumberInput value={set.weight} onChange={v => updateAccSet(i, "weight", v)} style={s.inputSm} min={0} step={2.5} />
-                    </div>
-                  </div>
-                ))}
-                <button style={{ ...s.btnGhost, fontSize: 12, marginBottom: 12 }}
-                  onClick={() => setAccSets(prev => [...prev, { reps: 10, weight: 40 }])}>+ Add Set</button>
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button style={{ ...s.btnOutline, flex: 1 }}
-                    onClick={() => { setAddingAccessory(false); setAccName(""); setAccSets([{ reps: 10, weight: 40 }]); }}>Cancel</button>
+                    {wodResultType === "time" ? (
+                      <>
+                        <label style={s.label}>Time (mm:ss)</label>
+                        <StableTextInput
+                          value={wodTime}
+                          onChange={v => setWodTime(v)}
+                          style={{ ...s.input, marginBottom: 12 }}
+                          placeholder="e.g. 12:34"
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <label style={s.label}>Reps completed</label>
+                        <StableNumberInput
+                          value={wodReps}
+                          onChange={v => setWodReps(v)}
+                          style={{ ...s.inputSm, width: "100%", marginBottom: 12 }}
+                          placeholder="0"
+                          min={0}
+                        />
+                      </>
+                    )}
+                  </>
+                ) : accName ? (
+                  <>
+                    <label style={s.label}>Sets</label>
+                    {accSets.map((set, i) => (
+                      <div key={`accset-${i}`} style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
+                        <span style={{ fontSize: 12, color: C.muted, width: 20 }}>{i + 1}</span>
+                        <div>
+                          <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>Reps</div>
+                          <StableNumberInput value={set.reps} onChange={v => updateAccSet(i, "reps", v)} style={s.inputSm} min={1} />
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>kg</div>
+                          <StableNumberInput value={set.weight} onChange={v => updateAccSet(i, "weight", v)} style={s.inputSm} min={0} step={2.5} />
+                        </div>
+                      </div>
+                    ))}
+                    <button style={{ ...s.btnGhost, fontSize: 12, marginBottom: 12 }}
+                      onClick={() => setAccSets(prev => [...prev, { reps: 10, weight: 40 }])}>+ Add Set</button>
+                  </>
+                ) : null}
+
+                <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                  <button style={{ ...s.btnOutline, flex: 1 }} onClick={resetAccForm}>Cancel</button>
                   <button style={{ ...s.btn, flex: 1 }} onClick={addAccessory}>Add</button>
                 </div>
               </div>
@@ -727,8 +813,16 @@ export default function App() {
                 <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
                   <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.15em", marginBottom: 4 }}>ACCESSORIES</div>
                   {h.accessories.map((acc, i) => (
-                    <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>
-                      {acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}
+                    <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
+                      {acc.isWod ? (
+                        <>
+                          <span style={{ color: C.accent, fontWeight: 700 }}>WOD</span>
+                          {acc.description ? <span> — {acc.description}</span> : null}
+                          {acc.result ? <span style={{ color: C.text }}> · {acc.resultType === "time" ? "⏱" : "🔢"} {acc.result}</span> : null}
+                        </>
+                      ) : (
+                        <>{acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}</>
+                      )}
                     </div>
                   ))}
                 </div>
