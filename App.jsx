@@ -178,6 +178,7 @@ export default function App() {
   const [currentCycle, setCurrentCycle] = usePersist("531_currentCycle", 1);
   const [history, setHistory] = usePersist("531_history", SEED_HISTORY);
   const [customExercises, setCustomExercises] = usePersist("531_customEx", []);
+  const [removedPresets, setRemovedPresets] = usePersist("531_removedPresets", []);
 
   // ── Session state ─────────────────────────────────────────────────────────
   const [sessionLift, setSessionLift] = useState(null);
@@ -387,7 +388,7 @@ export default function App() {
   };
 
   const s = {
-    app: { background: C.bg, minHeight: "100vh", maxWidth: 430, margin: "0 auto", fontFamily: "'Barlow Condensed', 'Impact', sans-serif", color: C.text, paddingBottom: 72 },
+    app: { background: C.bg, minHeight: "100vh", maxWidth: 430, margin: "0 auto", fontFamily: "'Barlow Condensed', 'Impact', sans-serif", color: C.text, paddingBottom: 88, paddingTop: 12 },
     topBar: { padding: "20px 20px 0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
     appTitle: { fontSize: 11, letterSpacing: "0.3em", color: C.muted, textTransform: "uppercase" },
     cycleTag: { fontSize: 10, letterSpacing: "0.2em", color: C.accent, background: "#2a2210", border: `1px solid ${C.accentDim}`, borderRadius: 4, padding: "3px 8px" },
@@ -426,7 +427,7 @@ export default function App() {
     return icons[name] || null;
   };
 
-  const allAccessoryExercises = [...PRESET_ACCESSORIES, ...customExercises];
+  const allAccessoryExercises = [...PRESET_ACCESSORIES.filter(e => !removedPresets.includes(e)), ...customExercises];
   const sessionAllDone = sessionSets.every(s => s.done);
 
   // ── RENDER ────────────────────────────────────────────────────────────────
@@ -727,10 +728,11 @@ export default function App() {
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
             These appear in the dropdown during sessions.
           </div>
-          {PRESET_ACCESSORIES.map(ex => (
+          {PRESET_ACCESSORIES.filter(ex => !removedPresets.includes(ex)).map(ex => (
             <div key={ex} style={{ ...s.histCard, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, padding: "10px 14px" }}>
               <span style={{ fontSize: 14, color: C.muted }}>{ex}</span>
-              <span style={{ fontSize: 10, color: C.border, letterSpacing: "0.1em" }}>PRESET</span>
+              <button style={{ ...s.btnDanger, padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
+                onClick={() => setRemovedPresets(prev => [...prev, ex])}>✕</button>
             </div>
           ))}
           {customExercises.map((ex, i) => (
