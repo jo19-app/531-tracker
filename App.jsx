@@ -507,7 +507,7 @@ export default function App() {
   };
 
   const s = {
-    app: { background: C.bg, minHeight: "100vh", maxWidth: 430, margin: "0 auto", fontFamily: "'Barlow Condensed', 'Impact', sans-serif", color: C.text, paddingBottom: 88, paddingTop: 12 },
+    app: { background: C.bg, minHeight: "100vh", maxWidth: 430, margin: "0 auto", fontFamily: "'Barlow Condensed', 'Impact', sans-serif", color: C.text, paddingBottom: 88, paddingTop: sessionStart && screen !== "session" ? 56 : 12 },
     topBar: { padding: "20px 20px 0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
     appTitle: { fontSize: 11, letterSpacing: "0.3em", color: C.muted, textTransform: "uppercase" },
     cycleTag: { fontSize: 10, letterSpacing: "0.2em", color: C.accent, background: "#2a2210", border: `1px solid ${C.accentDim}`, borderRadius: 4, padding: "3px 8px" },
@@ -541,7 +541,7 @@ export default function App() {
       home: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>,
       chart: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>,
       history: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>,
-      settings: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+      session: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>,
     };
     return icons[name] || null;
   };
@@ -1047,17 +1047,45 @@ export default function App() {
         />
       )}
 
-      {/* ── Bottom Nav ── */}
-      {screen !== "session" && (
-        <nav style={s.bottomNav}>
-          {[{ id: "home", label: "Home", icon: "home" }, { id: "progress", label: "Progress", icon: "chart" }, { id: "history", label: "History", icon: "history" }, { id: "settings", label: "Settings", icon: "settings" }].map(item => (
-            <button key={item.id} style={s.navItem(screen === item.id)} onClick={() => setScreen(item.id)}>
-              <Icon name={item.icon} size={18} />
-              {item.label}
-            </button>
-          ))}
-        </nav>
+      {/* ── Back to Session banner — shows on any screen while session is active ── */}
+      {sessionStart && screen !== "session" && (
+        <div
+          onClick={() => setScreen("session")}
+          style={{
+            position: "fixed", top: 0, left: "50%", transform: "translateX(-50%)",
+            width: "100%", maxWidth: 430, zIndex: 150,
+            background: C.accent, color: C.bg,
+            padding: "10px 20px", display: "flex", justifyContent: "space-between", alignItems: "center",
+            cursor: "pointer", fontFamily: "inherit",
+          }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 16 }}>⏱</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                Session in progress — {sessionLift}
+              </div>
+              <div style={{ fontSize: 11, opacity: 0.8 }}>{fmt(elapsed)} · Tap to return</div>
+            </div>
+          </div>
+          <span style={{ fontSize: 18, fontWeight: 700 }}>›</span>
+        </div>
       )}
+
+      {/* ── Bottom Nav — always visible ── */}
+      <nav style={s.bottomNav}>
+        {[
+          { id: "home", label: "Home", icon: "home" },
+          { id: "progress", label: "Progress", icon: "chart" },
+          { id: "history", label: "History", icon: "history" },
+          { id: "settings", label: "Settings", icon: "settings" },
+          ...(sessionStart ? [{ id: "session", label: "Session", icon: "session" }] : []),
+        ].map(item => (
+          <button key={item.id} style={s.navItem(screen === item.id)} onClick={() => setScreen(item.id)}>
+            <Icon name={item.icon} size={18} />
+            {item.label}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
