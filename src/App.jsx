@@ -120,7 +120,7 @@ const StableTextInput = ({ value, onChange, style, placeholder, onKeyDown }) => 
 
 // ── Line Chart ────────────────────────────────────────────────────────────────
 
-function LineChart({ points, color = "#f0c040", height = 90 }) {
+function LineChart({ points, color = "#f0c040", height = 90, onPointClick }) {
   if (points.length < 2) return (
     <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#444", fontSize: 12 }}>
       Not enough data yet
@@ -143,7 +143,12 @@ function LineChart({ points, color = "#f0c040", height = 90 }) {
       </defs>
       <path d={area} fill="url(#cg)" />
       <path d={path} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-      {points.map((p, i) => <circle key={i} cx={toX(i)} cy={toY(p.y)} r="3.5" fill={color} />)}
+      {points.map((p, i) => (
+        <g key={i} style={{ cursor: "pointer" }} onClick={() => onPointClick && onPointClick(p, toX(i), toY(p.y))}>
+          <circle cx={toX(i)} cy={toY(p.y)} r="10" fill="transparent" />
+          <circle cx={toX(i)} cy={toY(p.y)} r="4" fill={color} stroke="#111014" strokeWidth="1.5" />
+        </g>
+      ))}
       <text x={toX(0)} y={H} fill="#666" fontSize="9" textAnchor="middle">{points[0].label}</text>
       <text x={toX(points.length - 1)} y={H} fill="#666" fontSize="9" textAnchor="middle">{points[points.length - 1].label}</text>
     </svg>
@@ -201,6 +206,10 @@ export default function App() {
 
   // UI state
   const [progressLift, setProgressLift] = useState(liftNames[0] ?? "Squat");
+  const [progressWeek, setProgressWeek] = useState(null); // null = all, 0-3 = filter
+  const [chartTooltip, setChartTooltip] = useState(null); // { x, y, date, weight, reps }
+  const [sessionPopup, setSessionPopup] = useState(null); // history entry
+  const [editingSession, setEditingSession] = useState(null); // { id, sets, accessories }
   const [editingLift, setEditingLift] = useState(null);
   const [tmInput, setTmInput] = useState("");
   const [newExInput, setNewExInput] = useState("");
@@ -322,19 +331,51 @@ export default function App() {
     setConfirmDelete(null);
   }
 
+  function saveEditedSession(id, updatedSets) {
+    setHistory(prev => prev.map(h => h.id === id ? { ...h, sets: updatedSets } : h));
+    setEditingSession(null);
+  }
+
   // ── Progress helpers ──────────────────────────────────────────────────────
 
-  function getProgressPoints(lift) {
+  function getProgressPoints(lift, weekFilter = null) {
     return [...history]
-      .filter(h => h.lift === lift)
+      .filter(h => h.lift === lift && (weekFilter === null || h.weekIdx === weekFilter))
       .sort((a, b) => a.date.localeCompare(b.date))
-      .map(h => { const amrap = h.sets.find(s => s.isAmrap); return amrap ? { y: amrap.weight, label: h.date.slice(5) } : null; })
+      .map(h => {
+        const amrap = h.sets.find(s => s.isAmrap);
+        return amrap ? { y: amrap.weight, label: h.date.slice(5), date: h.date, reps: amrap.reps } : null;
+      })
       .filter(Boolean);
   }
 
+  function getPREntry(lift) {
+    const entries = [...history]
+      .filter(h => h.lift === lift)
+      .map(h => { const amrap = h.sets.find(s => s.isAmrap); return amrap ? { weight: amrap.weight, reps: amrap.reps, date: h.date } : null; })
+      .filter(Boolean);
+    if (!entries.length) return null;
+    return entries.reduce((best, e) => e.weight > best.weight ? e : best);
+  }
+
   function getPR(lift) {
-    const pts = getProgressPoints(lift);
-    return pts.length ? Math.max(...pts.map(p => p.y)) : null;
+    const e = getPREntry(lift);
+    return e ? e.weight : null;
+  }
+
+  // Returns Set of history IDs that are PRs (highest AMRAP weight seen so far chronologically)
+  function getPRIds() {
+    const prIds = new Set();
+    const byLift = {};
+    [...history].sort((a, b) => a.date.localeCompare(b.date)).forEach(h => {
+      const amrap = h.sets.find(s => s.isAmrap);
+      if (!amrap) return;
+      if (!byLift[h.lift] || amrap.weight > byLift[h.lift]) {
+        byLift[h.lift] = amrap.weight;
+        prIds.add(h.id);
+      }
+    });
+    return prIds;
   }
 
   // ── Export ────────────────────────────────────────────────────────────────
@@ -832,98 +873,208 @@ export default function App() {
       )}
 
       {/* ── HISTORY ── */}
-      {screen === "history" && (
-        <div style={s.section}>
-          <div style={{ ...s.sectionTitle, marginTop: 8 }}>Session History</div>
-          {history.length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
-          {[...history].sort((a, b) => b.date.localeCompare(a.date)).map(h => (
-            <div key={h.id} style={s.histCard}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <div>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>{h.lift}</div>
-                  <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)} · {weekLabel(h.weekIdx)} · C{h.cycle}</div>
-                </div>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                  <div style={{ fontSize: 12, color: C.muted }}>{h.duration ? fmt(h.duration) : "—"}</div>
-                  <button style={{ ...s.btnDanger, padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
-                    onClick={() => requestDeleteHistory(h)}>✕</button>
-                </div>
-              </div>
-              {h.sets.map((set, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4, fontSize: 14 }}>
-                  <span style={{ color: C.muted, width: 50 }}>Set {i + 1}</span>
-                  <span style={{ fontWeight: 600 }}>{set.weight} kg</span>
-                  <span style={{ color: set.isAmrap ? C.accent : C.muted }}>{set.reps} reps {set.isAmrap ? "★" : ""}</span>
-                </div>
-              ))}
-              {h.accessories.length > 0 && (
-                <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
-                  <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.15em", marginBottom: 4 }}>ACCESSORIES</div>
-                  {h.accessories.map((acc, i) => (
-                    <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
-                      {acc.isWod ? (
-                        <>
-                          <span style={{ color: C.accent, fontWeight: 700 }}>WOD</span>
-                          {acc.description ? <span> — {acc.description}</span> : null}
-                          {acc.result ? <span style={{ color: C.text }}> · {acc.resultType === "time" ? "⏱" : "🔢"} {acc.result}</span> : null}
-                        </>
-                      ) : (
-                        <>{acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}</>
-                      )}
+      {screen === "history" && (() => {
+        const prIds = getPRIds();
+        return (
+          <div style={s.section}>
+            <div style={{ ...s.sectionTitle, marginTop: 8 }}>Session History</div>
+            {history.length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
+            {[...history].sort((a, b) => b.date.localeCompare(a.date)).map(h => {
+              const isPR = prIds.has(h.id);
+              const isEditing = editingSession?.id === h.id;
+              return (
+                <div key={h.id} style={{ ...s.histCard, borderColor: isPR ? C.accentDim : C.border }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 22, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                        {h.lift}
+                        {isPR && <span title="Personal Record" style={{ fontSize: 18, color: C.accent }}>★</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)} · {weekLabel(h.weekIdx)} · C{h.cycle}</div>
                     </div>
-                  ))}
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                      <div style={{ fontSize: 12, color: C.muted }}>{h.duration ? fmt(h.duration) : "—"}</div>
+                      <button style={{ ...s.btnGhost, padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
+                        onClick={() => setEditingSession(isEditing ? null : { id: h.id, sets: h.sets.map(s => ({ ...s })) })}>
+                        {isEditing ? "Cancel" : "Edit"}
+                      </button>
+                      <button style={{ ...s.btnDanger, padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
+                        onClick={() => requestDeleteHistory(h)}>✕</button>
+                    </div>
+                  </div>
+
+                  {isEditing ? (
+                    /* ── Inline edit form ── */
+                    <div style={{ background: "#0e0d13", borderRadius: 8, padding: 12, marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.15em", marginBottom: 10 }}>EDIT SETS</div>
+                      {editingSession.sets.map((set, i) => (
+                        <div key={i} style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center" }}>
+                          <span style={{ fontSize: 12, color: C.muted, width: 44 }}>{set.isAmrap ? "AMRAP" : `Set ${i+1}`}</span>
+                          <div>
+                            <div style={{ fontSize: 9, color: C.muted, marginBottom: 2 }}>kg</div>
+                            <StableNumberInput
+                              value={set.weight}
+                              onChange={v => setEditingSession(prev => ({ ...prev, sets: prev.sets.map((s, j) => j === i ? { ...s, weight: parseFloat(v) || 0 } : s) }))}
+                              style={{ ...s.inputSm, width: 65 }} min={0} step={2.5}
+                            />
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 9, color: C.muted, marginBottom: 2 }}>reps</div>
+                            <StableNumberInput
+                              value={set.reps}
+                              onChange={v => setEditingSession(prev => ({ ...prev, sets: prev.sets.map((s, j) => j === i ? { ...s, reps: parseInt(v) || 0 } : s) }))}
+                              style={{ ...s.inputSm, width: 65 }} min={0}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                      <button style={{ ...s.btn, marginTop: 4 }}
+                        onClick={() => saveEditedSession(h.id, editingSession.sets)}>Save Changes</button>
+                    </div>
+                  ) : (
+                    h.sets.map((set, i) => (
+                      <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4, fontSize: 14 }}>
+                        <span style={{ color: C.muted, width: 50 }}>Set {i + 1}</span>
+                        <span style={{ fontWeight: 600 }}>{set.weight} kg</span>
+                        <span style={{ color: set.isAmrap ? C.accent : C.muted }}>{set.reps} reps {set.isAmrap ? "★" : ""}</span>
+                      </div>
+                    ))
+                  )}
+
+                  {h.accessories.length > 0 && !isEditing && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
+                      <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.15em", marginBottom: 4 }}>ACCESSORIES</div>
+                      {h.accessories.map((acc, i) => (
+                        <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
+                          {acc.isWod ? (
+                            <><span style={{ color: C.accent, fontWeight: 700 }}>WOD</span>{acc.description ? ` — ${acc.description}` : ""}{acc.result ? ` · ${acc.resultType === "time" ? "⏱" : "🔢"} ${acc.result}` : ""}</>
+                          ) : (
+                            <>{acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}</>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {/* ── PROGRESS ── */}
+      {screen === "progress" && (() => {
+        const prEntry = getPREntry(progressLift);
+        const filteredPoints = getProgressPoints(progressLift, progressWeek);
+        const liftHistory = [...history]
+          .filter(h => h.lift === progressLift && (progressWeek === null || h.weekIdx === progressWeek))
+          .sort((a, b) => b.date.localeCompare(a.date));
+
+        return (
+          <div style={s.section}>
+            <div style={{ ...s.sectionTitle, marginTop: 8 }}>Progress</div>
+
+            {/* Lift selector */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+              {liftNames.map(l => (
+                <button key={l} style={{ background: l === progressLift ? C.accent : C.surface, color: l === progressLift ? C.bg : C.muted, border: `1px solid ${l === progressLift ? C.accent : C.border}`, borderRadius: 8, padding: "7px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                  onClick={() => { setProgressLift(l); setChartTooltip(null); }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {/* Week filter — only W1, W2, W3 per spec */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+              {[{ label: "All", val: null }, { label: "W1", val: 0 }, { label: "W2", val: 1 }, { label: "W3", val: 2 }, { label: "Deload", val: 3 }].map(w => (
+                <button key={w.label} style={{
+                  flex: 1, padding: "7px 4px", textAlign: "center", fontSize: 11, fontWeight: 700,
+                  letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
+                  background: progressWeek === w.val ? C.accent : C.surface,
+                  color: progressWeek === w.val ? C.bg : C.muted,
+                  border: `1px solid ${progressWeek === w.val ? C.accent : C.border}`,
+                  borderRadius: 8,
+                }} onClick={() => { setProgressWeek(w.val); setChartTooltip(null); }}>
+                  {w.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Stats row */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+              <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+                <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>TRAINING MAX</div>
+                <div style={{ fontSize: 32, fontWeight: 700 }}>{lifts[progressLift]?.trainingMax ?? "—"}</div>
+                <div style={{ fontSize: 12, color: C.muted }}>kg</div>
+              </div>
+              <div style={{ background: C.surface, border: `1px solid ${C.accentDim}`, borderRadius: 12, padding: 16 }}>
+                <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>1 REP MAX — PERSONAL BEST</div>
+                {prEntry ? (
+                  <>
+                    <div style={{ fontSize: 28, fontWeight: 700, color: C.accent }}>{prEntry.weight} kg ★</div>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{prEntry.reps} rep{prEntry.reps !== 1 ? "s" : ""} · {fmtDate(prEntry.date)}</div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 20, fontWeight: 700, color: C.muted }}>No data</div>
+                )}
+              </div>
+            </div>
+
+            {/* Chart with tooltip */}
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 20, position: "relative" }}>
+              <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 12 }}>
+                AMRAP WEIGHT OVER TIME {progressWeek !== null ? `— ${WEEKS[progressWeek].label.toUpperCase()}` : ""}
+              </div>
+              <LineChart
+                points={filteredPoints}
+                color={C.accent}
+                height={90}
+                onPointClick={(p) => setChartTooltip(t => t?.date === p.date && t?.y === p.y ? null : p)}
+              />
+              {/* Tooltip */}
+              {chartTooltip && (
+                <div style={{
+                  background: "#1e1d26", border: `1px solid ${C.accent}`, borderRadius: 10,
+                  padding: "10px 14px", marginTop: 10,
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 2 }}>{fmtDate(chartTooltip.date)}</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: C.accent }}>{chartTooltip.y} kg</div>
+                    <div style={{ fontSize: 12, color: C.muted }}>{chartTooltip.reps} reps AMRAP</div>
+                  </div>
+                  <button style={{ ...s.btnGhost, fontSize: 16, padding: "4px 10px" }} onClick={() => setChartTooltip(null)}>✕</button>
                 </div>
               )}
             </div>
-          ))}
-        </div>
-      )}
 
-      {/* ── PROGRESS ── */}
-      {screen === "progress" && (
-        <div style={s.section}>
-          <div style={{ ...s.sectionTitle, marginTop: 8 }}>Progress</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-            {liftNames.map(l => (
-              <button key={l} style={{ background: l === progressLift ? C.accent : C.surface, color: l === progressLift ? C.bg : C.muted, border: `1px solid ${l === progressLift ? C.accent : C.border}`, borderRadius: 8, padding: "7px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
-                onClick={() => setProgressLift(l)}>{l}</button>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>TRAINING MAX</div>
-              <div style={{ fontSize: 32, fontWeight: 700 }}>{lifts[progressLift]?.trainingMax ?? "—"}</div>
-              <div style={{ fontSize: 12, color: C.muted }}>kg</div>
+            {/* Session log — clickable for popup */}
+            <div style={s.sectionTitle}>
+              Session Log — {progressLift}{progressWeek !== null ? ` · ${WEEKS[progressWeek].label}` : ""}
             </div>
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 6 }}>BEST AMRAP WT</div>
-              <div style={{ fontSize: 32, fontWeight: 700, color: C.accent }}>{getPR(progressLift) ?? "—"}</div>
-              <div style={{ fontSize: 12, color: C.muted }}>{getPR(progressLift) ? "kg" : "no data"}</div>
-            </div>
-          </div>
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 20 }}>
-            <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.2em", marginBottom: 12 }}>AMRAP WEIGHT OVER TIME</div>
-            <LineChart points={getProgressPoints(progressLift)} color={C.accent} height={90} />
-          </div>
-          <div style={s.sectionTitle}>Session Log — {progressLift}</div>
-          {history.filter(h => h.lift === progressLift).length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
-          {[...history].filter(h => h.lift === progressLift).sort((a, b) => b.date.localeCompare(a.date)).map(h => {
-            const amrap = h.sets.find(s => s.isAmrap);
-            return (
-              <div key={h.id} style={{ ...s.histCard, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 700 }}>{weekLabel(h.weekIdx)} · C{h.cycle}</div>
-                  <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)}</div>
+            {liftHistory.length === 0 && <div style={{ color: C.muted, fontSize: 14 }}>No sessions yet.</div>}
+            {liftHistory.map(h => {
+              const amrap = h.sets.find(s => s.isAmrap);
+              return (
+                <div key={h.id} style={{ ...s.histCard, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  onClick={() => setSessionPopup(h)}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 700 }}>{weekLabel(h.weekIdx)} · C{h.cycle}</div>
+                    <div style={{ fontSize: 12, color: C.muted }}>{fmtDate(h.date)}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    {amrap && <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: C.accent }}>{amrap.weight} kg</div>
+                      <div style={{ fontSize: 12, color: C.muted }}>{amrap.reps} reps</div>
+                    </div>}
+                    <span style={{ color: C.muted, fontSize: 16 }}>›</span>
+                  </div>
                 </div>
-                {amrap && <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: C.accent }}>{amrap.weight} kg</div>
-                  <div style={{ fontSize: 12, color: C.muted }}>{amrap.reps} reps AMRAP</div>
-                </div>}
-              </div>
-            );
-          })}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* ── SETTINGS ── */}
       {screen === "settings" && (
@@ -1068,6 +1219,45 @@ export default function App() {
               📂 Choose Excel File
             </button>
             {importMsg && <div style={{ marginTop: 12, fontSize: 13, color: C.accent, textAlign: "center" }}>{importMsg}</div>}
+          </div>
+        </div>
+      )}
+
+      {/* ── Session Detail Popup ── */}
+      {sessionPopup && (
+        <div style={s.modal} onClick={e => { if (e.target === e.currentTarget) setSessionPopup(null); }}>
+          <div style={{ ...s.modalBox, maxHeight: "80vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+              <div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{sessionPopup.lift}</div>
+                <div style={{ fontSize: 13, color: C.muted }}>{fmtDate(sessionPopup.date)} · {weekLabel(sessionPopup.weekIdx)} · Cycle {sessionPopup.cycle}</div>
+                {sessionPopup.duration ? <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Duration: {fmt(sessionPopup.duration)}</div> : null}
+              </div>
+              <button style={{ ...s.btnGhost, fontSize: 18, padding: "4px 10px", lineHeight: 1 }}
+                onClick={() => setSessionPopup(null)}>✕</button>
+            </div>
+            <div style={{ ...s.sectionTitle, marginBottom: 10 }}>Sets</div>
+            {sessionPopup.sets.map((set, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ color: C.muted, fontSize: 14 }}>{set.isAmrap ? "AMRAP" : `Set ${i + 1}`}</span>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>{set.weight} kg</span>
+                <span style={{ color: set.isAmrap ? C.accent : C.muted, fontSize: 14 }}>{set.reps} reps {set.isAmrap ? "★" : ""}</span>
+              </div>
+            ))}
+            {sessionPopup.accessories.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ ...s.sectionTitle, marginBottom: 10 }}>Accessories</div>
+                {sessionPopup.accessories.map((acc, i) => (
+                  <div key={i} style={{ fontSize: 14, color: C.muted, marginBottom: 6 }}>
+                    {acc.isWod ? (
+                      <><span style={{ color: C.accent, fontWeight: 700 }}>WOD</span>{acc.description ? ` — ${acc.description}` : ""}{acc.result ? ` · ${acc.resultType === "time" ? "⏱" : "🔢"} ${acc.result}` : ""}</>
+                    ) : (
+                      <>{acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}</>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
