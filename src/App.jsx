@@ -339,18 +339,36 @@ export default function App() {
 
   // ── Export ────────────────────────────────────────────────────────────────
 
-  // Converts internal date "1 May 2026" back to "YYYY-MM-DD" for import round-trip
-  function parseImportDate(str) {
+  // Converts various date formats to "YYYY-MM-DD"
+  function parseImportDate(val) {
+    if (!val && val !== 0) return null;
+
+    // Excel serial number (e.g. 45678)
+    if (typeof val === "number") {
+      // Excel epoch is Dec 30 1899; JS epoch is Jan 1 1970
+      const excelEpoch = new Date(1899, 11, 30);
+      const d = new Date(excelEpoch.getTime() + val * 86400000);
+      if (!isNaN(d)) return d.toISOString().split("T")[0];
+    }
+
+    const str = String(val).trim();
     if (!str) return null;
-    // Try ISO first
+
+    // Already ISO: 2026-05-01
     if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-    // Try "1 May 2026" or "01 May 2026"
+
+    // "1 May 2026" or "01 May 2026"
     const months = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
     const m = str.toLowerCase().match(/(\d{1,2})\s+([a-z]+)\s+(\d{4})/);
     if (m) {
       const mo = months[m[2].slice(0,3)];
-      if (mo) return `${m[3]}-${String(mo).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+      if (mo) return `${m[3]}-${String(mo).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
     }
+
+    // "05/01/2026" or "01/05/2026" — try JS Date parse as fallback
+    const d = new Date(str);
+    if (!isNaN(d)) return d.toISOString().split("T")[0];
+
     return null;
   }
 
@@ -372,7 +390,10 @@ export default function App() {
           "Set2_Reps": h.sets[1]?.reps ?? "",
           "AMRAP_Weight_kg": amrap?.weight ?? "",
           "AMRAP_Reps": amrap?.reps ?? "",
-          "Accessories": h.accessories.map(a => `${a.name}: ${a.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}`).join(" | "),
+          "Accessories": h.accessories.map(a => a.isWod
+            ? `WOD: ${a.description || ""} (${a.resultType}: ${a.result || ""})`
+            : `${a.name}: ${a.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}`
+          ).join(" | "),
           "Duration_seconds": h.duration ?? "",
         };
       });
@@ -380,30 +401,41 @@ export default function App() {
       ws1["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 7 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 12 }, { wch: 40 }, { wch: 16 }];
       XLSX.utils.book_append_sheet(wb, ws1, "Sessions");
 
+      // ── Training Maxes & PRs ──
+      const tmRows = liftNames.map(l => ({
+        "Lift": l,
+        "Training Max (kg)": lifts[l]?.trainingMax ?? "",
+        "PR — Best AMRAP Weight (kg)": getPR(l) ?? "No data",
+      }));
+      const ws2 = XLSX.utils.json_to_sheet(tmRows);
+      ws2["!cols"] = [{ wch: 20 }, { wch: 20 }, { wch: 28 }];
+      XLSX.utils.book_append_sheet(wb, ws2, "Training Maxes & PRs");
+
       // ── Custom Exercises sheet ──
       const exRows = customExercises.map(e => ({ "Custom Exercise Name": e }));
-      const ws2 = XLSX.utils.json_to_sheet(exRows.length ? exRows : [{ "Custom Exercise Name": "" }]);
-      ws2["!cols"] = [{ wch: 28 }];
-      XLSX.utils.book_append_sheet(wb, ws2, "Custom Exercises");
+      const ws3 = XLSX.utils.json_to_sheet(exRows.length ? exRows : [{ "Custom Exercise Name": "" }]);
+      ws3["!cols"] = [{ wch: 28 }];
+      XLSX.utils.book_append_sheet(wb, ws3, "Custom Exercises");
 
       // ── Instructions sheet ──
       const instructions = [
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "SESSIONS sheet column guide:" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Date (DD Mon YYYY) — e.g. '1 May 2026' or '2026-05-01'" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Lift — must match a lift name in the app exactly" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Week (1-4) — 1=Week1, 2=Week2, 3=Week3, 4=Deload" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Cycle — any number" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Set1_Weight_kg / Set1_Reps — warm-up set" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Set2_Weight_kg / Set2_Reps — second set" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  AMRAP_Weight_kg / AMRAP_Reps — last set, reps actually done" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Accessories — optional, free text" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Duration_seconds — optional, e.g. 3600 for 1 hour" },
         { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "SESSIONS sheet:" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Date: use format '1 May 2026' or 'YYYY-MM-DD'" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Lift: must match a lift name in the app" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Week: 1, 2, 3, or 4 (4 = Deload)" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Cycle: any number" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - AMRAP_Reps: reps actually completed on the last set" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Accessories: format 'Exercise: RepsxWeightkg' (optional)" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "CUSTOM EXERCISES sheet:" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - Add one exercise name per row" },
-        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  - These will be added to your accessory dropdown" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "CUSTOM EXERCISES sheet: one exercise name per row" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "TIP: Format the Date column as Text in Excel to avoid auto-conversion" },
       ];
-      const ws3 = XLSX.utils.json_to_sheet(instructions);
-      ws3["!cols"] = [{ wch: 60 }];
-      XLSX.utils.book_append_sheet(wb, ws3, "Instructions");
+      const ws4 = XLSX.utils.json_to_sheet(instructions);
+      ws4["!cols"] = [{ wch: 70 }];
+      XLSX.utils.book_append_sheet(wb, ws4, "Instructions");
 
       XLSX.writeFile(wb, "531-tracker-export.xlsx");
       setExportMsg("Excel downloaded — use same file to import!");
@@ -419,79 +451,82 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const wb = XLSX.read(ev.target.result, { type: "array" });
+        // cellDates:true makes XLSX parse date cells as JS Date objects
+        const wb = XLSX.read(ev.target.result, { type: "array", cellDates: true, dateNF: "yyyy-mm-dd" });
 
-        // Parse Sessions sheet
         const ws = wb.Sheets["Sessions"];
-        if (!ws) { setImportMsg("No 'Sessions' sheet found."); return; }
-        const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!ws) { setImportMsg("❌ No 'Sessions' sheet found. Make sure the sheet is named exactly 'Sessions'."); return; }
+
+        // raw:false converts all cells to strings, which helps with dates
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: "", raw: false });
+
+        if (rows.length === 0) { setImportMsg("❌ Sessions sheet is empty."); return; }
 
         const parsed = rows.map((r, i) => {
-          const date = parseImportDate(String(r["Date (DD Mon YYYY)"] || r["Date"] || ""));
-          const lift = String(r["Lift"] || "").trim();
-          const weekNum = parseInt(r["Week (1-4)"] || r["Week"] || 1);
-          const weekIdx = Math.min(Math.max((weekNum || 1) - 1, 0), 3);
-          const cycle = parseInt(r["Cycle"] || 1) || 1;
-          const s1w = parseFloat(r["Set1_Weight_kg"]) || 0;
-          const s1r = parseInt(r["Set1_Reps"]) || 0;
-          const s2w = parseFloat(r["Set2_Weight_kg"]) || 0;
-          const s2r = parseInt(r["Set2_Reps"]) || 0;
-          const aw  = parseFloat(r["AMRAP_Weight_kg"]) || 0;
-          const ar  = parseInt(r["AMRAP_Reps"]) || 0;
-          const dur = parseInt(r["Duration_seconds"]) || 0;
+          // Try both the full column name and shorthand
+          const rawDate = r["Date (DD Mon YYYY)"] || r["Date"] || r["date"] || "";
+          const date = parseImportDate(rawDate);
+          const lift = String(r["Lift"] || r["lift"] || "").trim();
           if (!date || !lift) return null;
-          return {
-            id: "imp_" + Date.now() + "_" + i,
-            date, lift, weekIdx, cycle, duration: dur,
-            sets: [
-              { weight: s1w, reps: s1r, isAmrap: false },
-              { weight: s2w, reps: s2r, isAmrap: false },
-              { weight: aw,  reps: ar,  isAmrap: true  },
-            ].filter(s => s.weight > 0 || s.reps > 0),
-            accessories: [],
-          };
+
+          const weekNum = parseInt(r["Week (1-4)"] || r["Week"] || r["week"] || 1) || 1;
+          const weekIdx = Math.min(Math.max(weekNum - 1, 0), 3);
+          const cycle   = parseInt(r["Cycle"] || r["cycle"] || 1) || 1;
+          const s1w = parseFloat(r["Set1_Weight_kg"])  || 0;
+          const s1r = parseInt(r["Set1_Reps"])         || 0;
+          const s2w = parseFloat(r["Set2_Weight_kg"])  || 0;
+          const s2r = parseInt(r["Set2_Reps"])         || 0;
+          const aw  = parseFloat(r["AMRAP_Weight_kg"]) || 0;
+          const ar  = parseInt(r["AMRAP_Reps"])        || 0;
+          const dur = parseInt(r["Duration_seconds"])  || 0;
+
+          const sets = [
+            s1w > 0 || s1r > 0 ? { weight: s1w, reps: s1r, isAmrap: false } : null,
+            s2w > 0 || s2r > 0 ? { weight: s2w, reps: s2r, isAmrap: false } : null,
+            aw  > 0 || ar  > 0 ? { weight: aw,  reps: ar,  isAmrap: true  } : null,
+          ].filter(Boolean);
+
+          return { id: `imp_${Date.now()}_${i}`, date, lift, weekIdx, cycle, duration: dur, sets, accessories: [] };
         }).filter(Boolean);
+
+        if (parsed.length === 0) {
+          setImportMsg("❌ No valid rows found. Check that Date and Lift columns are filled in correctly.");
+          return;
+        }
 
         // Parse Custom Exercises sheet
         const wsEx = wb.Sheets["Custom Exercises"];
         const importedExercises = wsEx
-          ? XLSX.utils.sheet_to_json(wsEx, { defval: "" })
+          ? XLSX.utils.sheet_to_json(wsEx, { defval: "", raw: false })
               .map(r => String(r["Custom Exercise Name"] || "").trim())
               .filter(Boolean)
           : [];
 
-        // Classify: new vs duplicate
         const existingKeys = new Set(history.map(h => `${h.date}__${h.lift}`));
-        const newSessions = parsed.filter(s => !existingKeys.has(`${s.date}__${s.lift}`));
-        const dupSessions = parsed.filter(s => existingKeys.has(`${s.date}__${s.lift}`));
+        const newSessions  = parsed.filter(s => !existingKeys.has(`${s.date}__${s.lift}`));
+        const dupSessions  = parsed.filter(s =>  existingKeys.has(`${s.date}__${s.lift}`));
 
         setImportPreview({ newSessions, dupSessions, importedExercises });
         setImportSelected(new Set(newSessions.map(s => s.id)));
       } catch (err) {
-        setImportMsg("Could not read file: " + err.message);
+        setImportMsg("❌ Could not read file: " + err.message);
       }
     };
     reader.readAsArrayBuffer(file);
-    // Reset input so same file can be re-selected
     e.target.value = "";
   }
 
   function confirmImport() {
-    const toAdd = importPreview.newSessions.filter(s => importSelected.has(s.id));
+    const toAdd      = importPreview.newSessions.filter(s => importSelected.has(s.id));
     const toOverwrite = importPreview.dupSessions.filter(s => importSelected.has(s.id));
     setHistory(prev => {
-      let updated = [...prev];
-      // Remove overwritten duplicates
       const overwriteKeys = new Set(toOverwrite.map(s => `${s.date}__${s.lift}`));
-      updated = updated.filter(h => !overwriteKeys.has(`${h.date}__${h.lift}`));
-      return [...updated, ...toAdd, ...toOverwrite];
+      return [...prev.filter(h => !overwriteKeys.has(`${h.date}__${h.lift}`)), ...toAdd, ...toOverwrite];
     });
-    // Merge custom exercises
     if (importPreview.importedExercises.length > 0) {
       setCustomExercises(prev => {
         const existing = new Set(prev);
-        const toAddEx = importPreview.importedExercises.filter(e => !existing.has(e));
-        return [...prev, ...toAddEx];
+        return [...prev, ...importPreview.importedExercises.filter(e => !existing.has(e))];
       });
     }
     const total = toAdd.length + toOverwrite.length;
@@ -502,12 +537,24 @@ export default function App() {
   }
 
   function exportPDF() {
-    const { sessions, tms } = buildExportData();
     const now = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-    const liftPRRows = tms.map(t => `<tr><td>${t.Lift}</td><td>${t["Training Max (kg)"]} kg</td><td class="gold">${t["PR — Best AMRAP Weight (kg)"]}${typeof t["PR — Best AMRAP Weight (kg)"] === "number" ? " kg" : ""}</td></tr>`).join("");
-    const sessionRows = sessions.slice(-30).reverse().map(s =>
-      `<tr><td>${s.Date}</td><td><strong>${s.Lift}</strong></td><td>${s.Week}/C${s.Cycle}</td><td>${s["Set 1 (kg)"]}kg×${s["Set 1 Reps"]}</td><td>${s["Set 2 (kg)"]}kg×${s["Set 2 Reps"]}</td><td class="gold"><strong>${s["AMRAP (kg)"]}kg×${s["AMRAP Reps"]}★</strong></td><td>${s.Duration}</td></tr>`
-    ).join("");
+    const liftPRRows = liftNames.map(l => {
+      const pr = getPR(l);
+      return `<tr><td>${l}</td><td>${lifts[l]?.trainingMax ?? "—"} kg</td><td class="gold">${pr ? pr + " kg" : "No data"}</td></tr>`;
+    }).join("");
+    const sessionRows = [...history].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30).map(h => {
+      const amrap = h.sets.find(s => s.isAmrap);
+      const s1 = h.sets[0], s2 = h.sets[1];
+      return `<tr>
+        <td>${fmtDate(h.date)}</td>
+        <td><strong>${h.lift}</strong></td>
+        <td>${weekLabel(h.weekIdx)} / C${h.cycle}</td>
+        <td>${s1 ? s1.weight + "kg×" + s1.reps : "—"}</td>
+        <td>${s2 ? s2.weight + "kg×" + s2.reps : "—"}</td>
+        <td class="gold"><strong>${amrap ? amrap.weight + "kg×" + amrap.reps + "★" : "—"}</strong></td>
+        <td>${h.duration ? fmt(h.duration) : "—"}</td>
+      </tr>`;
+    }).join("");
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>5/3/1 Export</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Helvetica Neue',sans-serif;color:#1a1a1a;padding:32px}h1{font-size:28px;font-weight:800;margin-bottom:4px}.sub{font-size:12px;color:#888;margin-bottom:28px}h2{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#444;margin:28px 0 10px;border-bottom:2px solid #f0c040;padding-bottom:6px;display:inline-block}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#1a1a1a;color:#f0c040;padding:8px 10px;text-align:left;font-size:10px;text-transform:uppercase}td{padding:7px 10px;border-bottom:1px solid #eee}.gold{color:#b8860b;font-weight:700}.footer{margin-top:32px;font-size:10px;color:#bbb;text-align:center}</style>
 </head><body><h1>5/3/1 Training Log</h1><div class="sub">Exported ${now} · Cycle ${currentCycle} · ${weekLabel(currentWeek)}</div>
