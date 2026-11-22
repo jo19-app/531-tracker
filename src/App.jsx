@@ -118,6 +118,29 @@ const StableTextInput = ({ value, onChange, style, placeholder, onKeyDown }) => 
   );
 };
 
+// Multi-line text box (line breaks allowed) that keeps the keyboard open while typing
+const StableTextArea = ({ value, onChange, style, placeholder, rows = 3 }) => {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current && ref.current !== document.activeElement) {
+      ref.current.value = value ?? "";
+    }
+  }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      defaultValue={value}
+      onChange={e => onChange(e.target.value)}
+      style={style}
+      placeholder={placeholder}
+      rows={rows}
+    />
+  );
+};
+
+const WOD_ICON = { time: "⏱", reps: "🔢", score: "📝" };
+const WOD_LABEL = { time: "Time", reps: "Reps", score: "Score" };
+
 // ── Line Chart ────────────────────────────────────────────────────────────────
 
 function LineChart({ points, color = "#f0c040", height = 90, onPointClick }) {
@@ -190,6 +213,7 @@ export default function App() {
   const [sessionLift, setSessionLift] = useState(null);
   const [sessionSets, setSessionSets] = useState([]);
   const [accessories, setAccessories] = useState([]);
+  const [sessionComment, setSessionComment] = useState("");
   const [sessionStart, setSessionStart] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef(null);
@@ -198,11 +222,13 @@ export default function App() {
   const [addingAccessory, setAddingAccessory] = useState(false);
   const [accName, setAccName] = useState("");
   const [accSets, setAccSets] = useState([{ reps: 10, weight: 40 }]);
+  const [accComment, setAccComment] = useState("");
   // WOD-specific state
   const [wodDescription, setWodDescription] = useState("");
-  const [wodResultType, setWodResultType] = useState("time"); // "time" | "reps"
+  const [wodResultType, setWodResultType] = useState("time"); // "time" | "reps" | "score"
   const [wodTime, setWodTime] = useState("");   // e.g. "12:34"
   const [wodReps, setWodReps] = useState("");
+  const [wodScore, setWodScore] = useState(""); // free text
 
   // UI state
   const [progressLift, setProgressLift] = useState(liftNames[0] ?? "Squat");
@@ -238,9 +264,9 @@ export default function App() {
 
   function startSession(lift) {
     const sets = calcSets(lifts[lift].trainingMax, currentWeek).map(s => ({ ...s, actualReps: "", done: false }));
-    setSessionLift(lift); setSessionSets(sets); setAccessories([]);
-    setAddingAccessory(false); setAccName(""); setAccSets([{ reps: 10, weight: 40 }]);
-    setWodDescription(""); setWodResultType("time"); setWodTime(""); setWodReps("");
+    setSessionLift(lift); setSessionSets(sets); setAccessories([]); setSessionComment("");
+    setAddingAccessory(false); setAccName(""); setAccSets([{ reps: 10, weight: 40 }]); setAccComment("");
+    setWodDescription(""); setWodResultType("time"); setWodTime(""); setWodReps(""); setWodScore("");
     setSessionStart(Date.now()); setScreen("session");
   }
 
@@ -262,6 +288,7 @@ export default function App() {
         reps: s.isAmrap ? (parseInt(s.actualReps) || 0) : (typeof s.reps === "number" ? s.reps : parseInt(s.reps)),
         isAmrap: s.isAmrap,
       })),
+      comment: sessionComment.trim(),
       accessories, duration,
     };
     setHistory(prev => [entry, ...prev]);
@@ -273,26 +300,32 @@ export default function App() {
   }
 
   function resetAccForm() {
-    setAccName(""); setAccSets([{ reps: 10, weight: 40 }]);
-    setWodDescription(""); setWodResultType("time"); setWodTime(""); setWodReps("");
+    setAccName(""); setAccSets([{ reps: 10, weight: 40 }]); setAccComment("");
+    setWodDescription(""); setWodResultType("time"); setWodTime(""); setWodReps(""); setWodScore("");
     setAddingAccessory(false);
   }
 
   function addAccessory() {
     if (!accName) return;
     if (accName === "WOD") {
+      const result = wodResultType === "time" ? wodTime : wodResultType === "reps" ? wodReps : wodScore;
       setAccessories(prev => [...prev, {
         name: "WOD",
         isWod: true,
         description: wodDescription,
         resultType: wodResultType,
-        result: wodResultType === "time" ? wodTime : wodReps,
+        result,
+        comment: accComment.trim(),
         sets: [],
       }]);
     } else {
-      setAccessories(prev => [...prev, { name: accName, sets: accSets }]);
+      setAccessories(prev => [...prev, { name: accName, sets: accSets, comment: accComment.trim() }]);
     }
     resetAccForm();
+  }
+
+  function updateAccessoryComment(idx, val) {
+    setAccessories(prev => prev.map((a, j) => j === idx ? { ...a, comment: val } : a));
   }
 
   function updateAccSet(i, field, val) {
@@ -331,8 +364,8 @@ export default function App() {
     setConfirmDelete(null);
   }
 
-  function saveEditedSession(id, updatedSets) {
-    setHistory(prev => prev.map(h => h.id === id ? { ...h, sets: updatedSets } : h));
+  function saveEditedSession(id, updatedSets, updatedComment) {
+    setHistory(prev => prev.map(h => h.id === id ? { ...h, sets: updatedSets, comment: (updatedComment ?? h.comment ?? "").trim() } : h));
     setEditingSession(null);
   }
 
@@ -431,15 +464,16 @@ export default function App() {
           "Set2_Reps": h.sets[1]?.reps ?? "",
           "AMRAP_Weight_kg": amrap?.weight ?? "",
           "AMRAP_Reps": amrap?.reps ?? "",
-          "Accessories": h.accessories.map(a => a.isWod
+          "Accessories": h.accessories.map(a => (a.isWod
             ? `WOD: ${a.description || ""} (${a.resultType}: ${a.result || ""})`
             : `${a.name}: ${a.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}`
-          ).join(" | "),
+          ) + (a.comment ? ` [note: ${a.comment}]` : "")).join(" | "),
           "Duration_seconds": h.duration ?? "",
+          "Comment": h.comment ?? "",
         };
       });
       const ws1 = XLSX.utils.json_to_sheet(sessionRows);
-      ws1["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 7 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 12 }, { wch: 40 }, { wch: 16 }];
+      ws1["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 7 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 12 }, { wch: 40 }, { wch: 16 }, { wch: 40 }];
       XLSX.utils.book_append_sheet(wb, ws1, "Sessions");
 
       // ── Training Maxes & PRs ──
@@ -470,6 +504,7 @@ export default function App() {
         { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  AMRAP_Weight_kg / AMRAP_Reps — last set, reps actually done" },
         { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Accessories — optional, free text" },
         { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Duration_seconds — optional, e.g. 3600 for 1 hour" },
+        { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "  Comment — optional free text note for the main lift" },
         { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "" },
         { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "CUSTOM EXERCISES sheet: one exercise name per row" },
         { "HOW TO USE THIS FILE AS IMPORT TEMPLATE": "TIP: Format the Date column as Text in Excel to avoid auto-conversion" },
@@ -527,7 +562,9 @@ export default function App() {
             aw  > 0 || ar  > 0 ? { weight: aw,  reps: ar,  isAmrap: true  } : null,
           ].filter(Boolean);
 
-          return { id: `imp_${Date.now()}_${i}`, date, lift, weekIdx, cycle, duration: dur, sets, accessories: [] };
+          const comment = String(r["Comment"] || r["comment"] || "").trim();
+
+          return { id: `imp_${Date.now()}_${i}`, date, lift, weekIdx, cycle, duration: dur, sets, comment, accessories: [] };
         }).filter(Boolean);
 
         if (parsed.length === 0) {
@@ -619,7 +656,7 @@ export default function App() {
   };
 
   const s = {
-    app: { background: C.bg, minHeight: "100vh", maxWidth: 430, margin: "0 auto", fontFamily: "'Barlow Condensed', 'Impact', sans-serif", color: C.text, paddingBottom: 88, paddingTop: sessionStart && screen !== "session" ? 56 : 12 },
+    app: { background: C.bg, minHeight: "100vh", maxWidth: 430, margin: "0 auto", fontFamily: "'Barlow Condensed', 'Impact', sans-serif", color: C.text, paddingBottom: sessionStart ? 140 : 88, paddingTop: 12 },
     topBar: { padding: "20px 20px 0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
     appTitle: { fontSize: 11, letterSpacing: "0.3em", color: C.muted, textTransform: "uppercase" },
     cycleTag: { fontSize: 10, letterSpacing: "0.2em", color: C.accent, background: "#2a2210", border: `1px solid ${C.accentDim}`, borderRadius: 4, padding: "3px 8px" },
@@ -632,6 +669,7 @@ export default function App() {
     btnDanger: { background: "none", color: C.danger, border: `1px solid #4a2020`, borderRadius: 8, padding: "8px 12px", fontFamily: "inherit", fontSize: 13, cursor: "pointer" },
     input: { background: "#0e0d13", border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, fontFamily: "inherit", fontSize: 16, padding: "10px 12px", outline: "none", width: "100%", boxSizing: "border-box" },
     inputSm: { background: "#0e0d13", border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, fontFamily: "inherit", fontSize: 16, padding: "8px 10px", outline: "none", width: 72, textAlign: "center" },
+    textarea: { background: "#0e0d13", border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, fontFamily: "inherit", fontSize: 15, lineHeight: 1.4, padding: "10px 12px", outline: "none", width: "100%", boxSizing: "border-box", resize: "vertical" },
     label: { fontSize: 10, letterSpacing: "0.2em", color: C.muted, textTransform: "uppercase", marginBottom: 6, display: "block" },
     section: { padding: "20px 20px 0" },
     sectionTitle: { fontSize: 10, letterSpacing: "0.25em", color: C.muted, textTransform: "uppercase", marginBottom: 14 },
@@ -642,7 +680,9 @@ export default function App() {
     setRow: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", marginBottom: 10, display: "flex", alignItems: "center", gap: 12 },
     setRowDone: { background: "#161a18", border: `1px solid #2a3830`, borderRadius: 12, padding: "14px 16px", marginBottom: 10, display: "flex", alignItems: "center", gap: 12, opacity: 0.6 },
     checkBtn: (done) => ({ width: 32, height: 32, borderRadius: "50%", border: `2px solid ${done ? C.green : C.border}`, background: done ? C.green : "none", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: C.bg, fontSize: 16 }),
-    bottomNav: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, background: "#19181fee", backdropFilter: "blur(12px)", borderTop: `1px solid ${C.border}`, display: "flex", zIndex: 100 },
+    bottomWrap: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, zIndex: 100 },
+    timerRow: { background: "#241f10", borderTop: `1px solid ${C.accentDim}`, padding: "8px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" },
+    bottomNav: { background: "#19181fee", backdropFilter: "blur(12px)", borderTop: `1px solid ${C.border}`, display: "flex" },
     navItem: (active) => ({ flex: 1, padding: "12px 4px 10px", textAlign: "center", cursor: "pointer", background: "none", border: "none", fontFamily: "inherit", color: active ? C.accent : C.muted, fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }),
     modal: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.78)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" },
     modalBox: { background: "#1e1d26", border: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: "24px 20px 36px", width: "100%", maxWidth: 430 },
@@ -725,7 +765,6 @@ export default function App() {
               <div style={{ fontSize: 11, color: C.muted, letterSpacing: "0.2em", textTransform: "uppercase" }}>{WEEKS[currentWeek].label}</div>
               <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.1 }}>{sessionLift}</div>
             </div>
-            <div style={s.timerBadge}>{fmt(elapsed)}</div>
           </div>
           <div style={s.section}>
             <div style={s.sectionTitle}>Working Sets</div>
@@ -756,6 +795,16 @@ export default function App() {
               </div>
             ))}
 
+            {/* Comment for the main lift, directly below the highest-weight set */}
+            <label style={{ ...s.label, marginTop: 4 }}>Comment</label>
+            <StableTextArea
+              value={sessionComment}
+              onChange={v => setSessionComment(v)}
+              style={s.textarea}
+              rows={3}
+              placeholder="How did it feel? Notes on technique, form, next time…"
+            />
+
             <div style={s.divider} />
             <div style={s.sectionTitle}>Accessories</div>
 
@@ -764,12 +813,9 @@ export default function App() {
                 <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>{acc.name}</div>
                 {acc.isWod ? (
                   <>
-                    {acc.description ? <div style={{ fontSize: 13, color: C.muted, marginBottom: 4, lineHeight: 1.5 }}>{acc.description}</div> : null}
-                    <div style={{ fontSize: 13 }}>
-                      {acc.resultType === "time"
-                        ? <span>Time: <span style={{ color: C.accent, fontWeight: 700 }}>{acc.result || "—"}</span></span>
-                        : <span>Reps: <span style={{ color: C.accent, fontWeight: 700 }}>{acc.result || "—"}</span></span>
-                      }
+                    {acc.description ? <div style={{ fontSize: 13, color: C.muted, marginBottom: 6, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{acc.description}</div> : null}
+                    <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>
+                      {WOD_LABEL[acc.resultType] ?? "Result"}: <span style={{ color: C.accent, fontWeight: 700 }}>{acc.result || "—"}</span>
                     </div>
                   </>
                 ) : (
@@ -779,6 +825,14 @@ export default function App() {
                     </div>
                   ))
                 )}
+                <label style={{ ...s.label, marginTop: 10 }}>Comment</label>
+                <StableTextArea
+                  value={acc.comment || ""}
+                  onChange={v => updateAccessoryComment(i, v)}
+                  style={s.textarea}
+                  rows={2}
+                  placeholder="Notes on this exercise…"
+                />
               </div>
             ))}
 
@@ -793,26 +847,27 @@ export default function App() {
                 {/* WOD-specific form */}
                 {accName === "WOD" ? (
                   <>
-                    <label style={s.label}>WOD Description</label>
-                    <StableTextInput
+                    <label style={s.label}>WOD Description (line breaks allowed)</label>
+                    <StableTextArea
                       value={wodDescription}
                       onChange={v => setWodDescription(v)}
-                      style={{ ...s.input, marginBottom: 12 }}
-                      placeholder="e.g. 21-15-9 Thrusters & Pull-ups…"
+                      style={{ ...s.textarea, marginBottom: 12 }}
+                      rows={5}
+                      placeholder={"e.g.\n21-15-9\nThrusters\nPull-ups"}
                     />
                     <label style={s.label}>Result Type</label>
                     <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                      {["time", "reps"].map(t => (
+                      {["time", "reps", "score"].map(t => (
                         <button key={t} style={{
-                          flex: 1, padding: "10px", borderRadius: 8, fontFamily: "inherit",
-                          fontSize: 14, fontWeight: 700, cursor: "pointer", textTransform: "uppercase",
+                          flex: 1, padding: "10px 4px", borderRadius: 8, fontFamily: "inherit",
+                          fontSize: 13, fontWeight: 700, cursor: "pointer", textTransform: "uppercase",
                           background: wodResultType === t ? C.accent : C.surface,
                           color: wodResultType === t ? C.bg : C.muted,
                           border: `1px solid ${wodResultType === t ? C.accent : C.border}`,
-                        }} onClick={() => setWodResultType(t)}>{t === "time" ? "⏱ Time" : "🔢 Reps"}</button>
+                        }} onClick={() => setWodResultType(t)}>{WOD_ICON[t]} {WOD_LABEL[t]}</button>
                       ))}
                     </div>
-                    {wodResultType === "time" ? (
+                    {wodResultType === "time" && (
                       <>
                         <label style={s.label}>Time (mm:ss)</label>
                         <StableTextInput
@@ -822,7 +877,8 @@ export default function App() {
                           placeholder="e.g. 12:34"
                         />
                       </>
-                    ) : (
+                    )}
+                    {wodResultType === "reps" && (
                       <>
                         <label style={s.label}>Reps completed</label>
                         <StableNumberInput
@@ -831,6 +887,18 @@ export default function App() {
                           style={{ ...s.inputSm, width: "100%", marginBottom: 12 }}
                           placeholder="0"
                           min={0}
+                        />
+                      </>
+                    )}
+                    {wodResultType === "score" && (
+                      <>
+                        <label style={s.label}>Score (free text)</label>
+                        <StableTextArea
+                          value={wodScore}
+                          onChange={v => setWodScore(v)}
+                          style={{ ...s.textarea, marginBottom: 12 }}
+                          rows={2}
+                          placeholder="e.g. Rx, 5 rounds + 3 reps, scaled"
                         />
                       </>
                     )}
@@ -855,6 +923,19 @@ export default function App() {
                       onClick={() => setAccSets(prev => [...prev, { reps: 10, weight: 40 }])}>+ Add Set</button>
                   </>
                 ) : null}
+
+                {accName && (
+                  <>
+                    <label style={s.label}>Comment</label>
+                    <StableTextArea
+                      value={accComment}
+                      onChange={v => setAccComment(v)}
+                      style={{ ...s.textarea, marginBottom: 12 }}
+                      rows={2}
+                      placeholder="Notes on this exercise…"
+                    />
+                  </>
+                )}
 
                 <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
                   <button style={{ ...s.btnOutline, flex: 1 }} onClick={resetAccForm}>Cancel</button>
@@ -896,7 +977,7 @@ export default function App() {
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                       <div style={{ fontSize: 12, color: C.muted }}>{h.duration ? fmt(h.duration) : "—"}</div>
                       <button style={{ ...s.btnGhost, padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
-                        onClick={() => setEditingSession(isEditing ? null : { id: h.id, sets: h.sets.map(s => ({ ...s })) })}>
+                        onClick={() => setEditingSession(isEditing ? null : { id: h.id, sets: h.sets.map(s => ({ ...s })), comment: h.comment || "" })}>
                         {isEditing ? "Cancel" : "Edit"}
                       </button>
                       <button style={{ ...s.btnDanger, padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
@@ -929,8 +1010,16 @@ export default function App() {
                           </div>
                         </div>
                       ))}
+                      <label style={{ ...s.label, marginTop: 4 }}>Comment</label>
+                      <StableTextArea
+                        value={editingSession.comment}
+                        onChange={v => setEditingSession(prev => ({ ...prev, comment: v }))}
+                        style={{ ...s.textarea, marginBottom: 10 }}
+                        rows={3}
+                        placeholder="Notes on this session…"
+                      />
                       <button style={{ ...s.btn, marginTop: 4 }}
-                        onClick={() => saveEditedSession(h.id, editingSession.sets)}>Save Changes</button>
+                        onClick={() => saveEditedSession(h.id, editingSession.sets, editingSession.comment)}>Save Changes</button>
                     </div>
                   ) : (
                     h.sets.map((set, i) => (
@@ -944,16 +1033,27 @@ export default function App() {
                     ))
                   )}
 
+                  {h.comment && !isEditing && (
+                    <div style={{ marginTop: 8, fontSize: 13, color: C.muted, fontStyle: "italic", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                      “{h.comment}”
+                    </div>
+                  )}
+
                   {h.accessories.length > 0 && !isEditing && (
                     <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
                       <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.15em", marginBottom: 4 }}>ACCESSORIES</div>
                       {h.accessories.map((acc, i) => (
-                        <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
+                        <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>
                           {acc.isWod ? (
-                            <><span style={{ color: C.accent, fontWeight: 700 }}>WOD</span>{acc.description ? ` — ${acc.description}` : ""}{acc.result ? ` · ${acc.resultType === "time" ? "⏱" : "🔢"} ${acc.result}` : ""}</>
+                            <>
+                              <span style={{ color: C.text, fontWeight: 700 }}>WOD</span>
+                              {acc.result ? <span style={{ color: C.text }}> · {WOD_ICON[acc.resultType] ?? ""} {acc.result}</span> : null}
+                              {acc.description ? <div style={{ whiteSpace: "pre-wrap", marginTop: 2 }}>{acc.description}</div> : null}
+                            </>
                           ) : (
                             <>{acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}</>
                           )}
+                          {acc.comment ? <div style={{ fontStyle: "italic", marginTop: 2, whiteSpace: "pre-wrap" }}>“{acc.comment}”</div> : null}
                         </div>
                       ))}
                     </div>
@@ -1247,16 +1347,26 @@ export default function App() {
                 <span style={{ color: set.isAmrap ? C.accent : C.muted, fontSize: 14 }}>{set.reps} reps {set.isAmrap ? "★" : ""}</span>
               </div>
             ))}
+            {sessionPopup.comment && (
+              <div style={{ marginTop: 12, fontSize: 14, color: C.muted, fontStyle: "italic", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                “{sessionPopup.comment}”
+              </div>
+            )}
             {sessionPopup.accessories.length > 0 && (
               <div style={{ marginTop: 14 }}>
                 <div style={{ ...s.sectionTitle, marginBottom: 10 }}>Accessories</div>
                 {sessionPopup.accessories.map((acc, i) => (
-                  <div key={i} style={{ fontSize: 14, color: C.muted, marginBottom: 6 }}>
+                  <div key={i} style={{ fontSize: 14, color: C.muted, marginBottom: 10 }}>
                     {acc.isWod ? (
-                      <><span style={{ color: C.accent, fontWeight: 700 }}>WOD</span>{acc.description ? ` — ${acc.description}` : ""}{acc.result ? ` · ${acc.resultType === "time" ? "⏱" : "🔢"} ${acc.result}` : ""}</>
+                      <>
+                        <span style={{ color: C.text, fontWeight: 700 }}>WOD</span>
+                        {acc.result ? <span style={{ color: C.text }}> · {WOD_ICON[acc.resultType] ?? ""} {acc.result}</span> : null}
+                        {acc.description ? <div style={{ whiteSpace: "pre-wrap", marginTop: 2 }}>{acc.description}</div> : null}
+                      </>
                     ) : (
                       <>{acc.name}: {acc.sets.map(s => `${s.reps}×${s.weight}kg`).join(", ")}</>
                     )}
+                    {acc.comment ? <div style={{ fontStyle: "italic", marginTop: 2, whiteSpace: "pre-wrap" }}>“{acc.comment}”</div> : null}
                   </div>
                 ))}
               </div>
@@ -1381,45 +1491,37 @@ export default function App() {
         />
       )}
 
-      {/* ── Back to Session banner — shows on any screen while session is active ── */}
-      {sessionStart && screen !== "session" && (
-        <div
-          onClick={() => setScreen("session")}
-          style={{
-            position: "fixed", top: 0, left: "50%", transform: "translateX(-50%)",
-            width: "100%", maxWidth: 430, zIndex: 150,
-            background: C.accent, color: C.bg,
-            padding: "10px 20px", display: "flex", justifyContent: "space-between", alignItems: "center",
-            cursor: "pointer", fontFamily: "inherit",
-          }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 16 }}>⏱</span>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                Session in progress — {sessionLift}
-              </div>
-              <div style={{ fontSize: 11, opacity: 0.8 }}>{fmt(elapsed)} · Tap to return</div>
+      {/* ── Fixed bottom area: session timer row (always visible) above the tabs ── */}
+      <div style={s.bottomWrap}>
+        {sessionStart && (
+          <div
+            style={{ ...s.timerRow, cursor: screen === "session" ? "default" : "pointer" }}
+            onClick={() => { if (screen !== "session") setScreen("session"); }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 18 }}>⏱</span>
+              <span style={{ fontSize: 26, fontWeight: 700, color: C.accent, letterSpacing: "0.04em", fontVariantNumeric: "tabular-nums" }}>{fmt(elapsed)}</span>
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, letterSpacing: "0.08em", textTransform: "uppercase", textAlign: "right" }}>
+              {sessionLift}{screen !== "session" ? " · Tap to return ›" : ""}
             </div>
           </div>
-          <span style={{ fontSize: 18, fontWeight: 700 }}>›</span>
-        </div>
-      )}
-
-      {/* ── Bottom Nav — always visible ── */}
-      <nav style={s.bottomNav}>
-        {[
-          { id: "home", label: "Home", icon: "home" },
-          { id: "progress", label: "Progress", icon: "chart" },
-          { id: "history", label: "History", icon: "history" },
-          { id: "settings", label: "Settings", icon: "settings" },
-          ...(sessionStart ? [{ id: "session", label: "Session", icon: "session" }] : []),
-        ].map(item => (
-          <button key={item.id} style={s.navItem(screen === item.id)} onClick={() => setScreen(item.id)}>
-            <Icon name={item.icon} size={18} />
-            {item.label}
-          </button>
-        ))}
-      </nav>
+        )}
+        <nav style={s.bottomNav}>
+          {[
+            { id: "home", label: "Home", icon: "home" },
+            { id: "progress", label: "Progress", icon: "chart" },
+            { id: "history", label: "History", icon: "history" },
+            { id: "settings", label: "Settings", icon: "settings" },
+            ...(sessionStart ? [{ id: "session", label: "Session", icon: "session" }] : []),
+          ].map(item => (
+            <button key={item.id} style={s.navItem(screen === item.id)} onClick={() => setScreen(item.id)}>
+              <Icon name={item.icon} size={18} />
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </div>
     </div>
   );
 }
